@@ -1,25 +1,14 @@
 // api/stt-ingest.ts
-//
 // Vercel Serverless Function
-//
-// 역할:
-// 1. 클라이언트에서 오디오 청크 수신
-// 2. CLOVA Speech 단문 인식 API 호출
-// 3. 결과를 Supabase stt_poc.transcript_chunks에 저장
-//
-// 서버 전용 환경변수:
-// - SUPABASE_URL
-// - SUPABASE_SERVICE_ROLE_KEY
-// - CLOVA_SPEECH_INVOKE_URL
-// - CLOVA_SPEECH_SECRET
+// WAV 청크 → CLOVA Speech 단문 인식 → Supabase 저장
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import {
-  createClient,
-  type SupabaseClient,
-} from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 const STT_SCHEMA = 'stt_poc';
+const MAX_AUDIO_BYTES = 2 * 1024 * 1024;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface IngestRequestBody {
   sessionId: string;
@@ -44,13 +33,22 @@ interface EnvironmentVariables {
   clovaSecret: string;
 }
 
+class RequestError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number
+  ) {
+    super(message);
+    this.name = 'RequestError';
+  }
+}
+
 export default async function handler(
   req: VercelRequest,
   res: VercelResponse
 ) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
-
     return res.status(405).json({
       error: 'Method not allowed',
       detail: 'POST 요청만 허용됩니다.',
@@ -60,8 +58,15 @@ export default async function handler(
   try {
     const env = getEnvironmentVariables();
     const body = parseRequestBody(req.body);
-
     validateRequestBody(body);
+
+    const audioBuffer = decodeAudioBase64(body.audioBase64);
+    if (audioBuffer.length > MAX_AUDIO_BYTES) {
+      throw new RequestError(
+        `오디오 청크는 ${MAX_AUDIO_BYTES}바이트 이하여야 합니다.`,
+        413
+      );
+    }
 
     const supabase = createSupabaseClient(
       env.supabaseUrl,
@@ -73,27 +78,18 @@ export default async function handler(
     const sttResult = await callClovaSpeech({
       invokeUrl: env.clovaInvokeUrl,
       secret: env.clovaSecret,
-      audioBase64: body.audioBase64,
-      mimeType: body.mimeType,
+      audioBuffer,
     });
 
     const recognizedText =
-      typeof sttResult.text === 'string'
-        ? sttResult.text.trim()
-        : '';
-
-    const durationMs = Math.max(
-      0,
-      body.chunkEndMs - body.chunkStartMs
-    );
+      typeof sttResult.text === 'string' ? sttResult.text.trim() : '';
+    const durationMs = Math.max(0, body.chunkEndMs - body.chunkStartMs);
 
     await saveTranscriptChunk(supabase, {
       sessionId: body.sessionId,
       chunkIndex: body.chunkIndex,
       transcript: recognizedText,
-      audioFormat:
-        body.mimeType?.trim() ||
-        'application/octet-stream',
+      audioFormat: 'audio/wav',
       durationMs,
     });
 
@@ -105,202 +101,140 @@ export default async function handler(
     });
   } catch (error) {
     const detail = getErrorMessage(error);
+    const statusCode = error instanceof RequestError ? error.statusCode : 500;
 
     console.error('[stt-ingest] failed:', error);
 
-    return res.status(500).json({
-      error: 'STT 처리 실패',
-
-      // 로컬·Development에서만 상세 오류를 반환합니다.
-      ...(process.env.VERCEL_ENV !== 'production'
-        ? { detail }
-        : {}),
+    return res.status(statusCode).json({
+      error: statusCode >= 500 ? 'STT 처리 실패' : '요청 처리 실패',
+      ...(process.env.VERCEL_ENV !== 'production' ? { detail } : {}),
     });
   }
 }
 
 function getEnvironmentVariables(): EnvironmentVariables {
-  const supabaseUrl =
-    process.env.SUPABASE_URL?.trim();
+  const values = {
+    supabaseUrl: process.env.SUPABASE_URL?.trim(),
+    supabaseServiceRoleKey:
+      process.env.SUPABASE_SERVICE_ROLE_KEY?.trim(),
+    clovaInvokeUrl: process.env.CLOVA_SPEECH_INVOKE_URL?.trim(),
+    clovaSecret: process.env.CLOVA_SPEECH_SECRET?.trim(),
+  };
 
-  const supabaseServiceRoleKey =
-    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-
-  const clovaInvokeUrl =
-    process.env.CLOVA_SPEECH_INVOKE_URL?.trim();
-
-  const clovaSecret =
-    process.env.CLOVA_SPEECH_SECRET?.trim();
-
-  const missing: string[] = [];
-
-  if (!supabaseUrl) {
-    missing.push('SUPABASE_URL');
-  }
-
-  if (!supabaseServiceRoleKey) {
-    missing.push('SUPABASE_SERVICE_ROLE_KEY');
-  }
-
-  if (!clovaInvokeUrl) {
-    missing.push('CLOVA_SPEECH_INVOKE_URL');
-  }
-
-  if (!clovaSecret) {
-    missing.push('CLOVA_SPEECH_SECRET');
-  }
+  const missing = [
+    !values.supabaseUrl && 'SUPABASE_URL',
+    !values.supabaseServiceRoleKey && 'SUPABASE_SERVICE_ROLE_KEY',
+    !values.clovaInvokeUrl && 'CLOVA_SPEECH_INVOKE_URL',
+    !values.clovaSecret && 'CLOVA_SPEECH_SECRET',
+  ].filter((value): value is string => Boolean(value));
 
   if (missing.length > 0) {
-    throw new Error(
-      `필수 환경변수 누락: ${missing.join(', ')}`
-    );
+    throw new Error(`필수 환경변수 누락: ${missing.join(', ')}`);
   }
 
-  return {
-    supabaseUrl,
-    supabaseServiceRoleKey,
-    clovaInvokeUrl,
-    clovaSecret,
-  };
+  return values as EnvironmentVariables;
 }
 
 function createSupabaseClient(
   supabaseUrl: string,
   serviceRoleKey: string
 ): SupabaseClient {
-  return createClient(
-    supabaseUrl,
-    serviceRoleKey,
-    {
-      db: {
-        schema: STT_SCHEMA,
-      },
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-        detectSessionInUrl: false,
-      },
-    }
-  );
+  return createClient(supabaseUrl, serviceRoleKey, {
+    db: { schema: STT_SCHEMA },
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+    },
+  });
 }
 
-function parseRequestBody(
-  rawBody: unknown
-): IngestRequestBody {
-  if (
-    rawBody === null ||
-    rawBody === undefined
-  ) {
-    throw new Error('요청 본문이 없습니다.');
+function parseRequestBody(rawBody: unknown): IngestRequestBody {
+  if (rawBody === null || rawBody === undefined) {
+    throw new RequestError('요청 본문이 없습니다.', 400);
   }
 
   if (typeof rawBody === 'string') {
     try {
-      return JSON.parse(
-        rawBody
-      ) as IngestRequestBody;
+      return JSON.parse(rawBody) as IngestRequestBody;
     } catch {
-      throw new Error(
-        '요청 본문이 올바른 JSON이 아닙니다.'
-      );
+      throw new RequestError('요청 본문이 올바른 JSON이 아닙니다.', 400);
     }
   }
 
   if (typeof rawBody !== 'object') {
-    throw new Error(
-      '요청 본문 형식이 올바르지 않습니다.'
-    );
+    throw new RequestError('요청 본문 형식이 올바르지 않습니다.', 400);
   }
 
   return rawBody as IngestRequestBody;
 }
 
-function validateRequestBody(
-  body: IngestRequestBody
-): void {
+function validateRequestBody(body: IngestRequestBody): void {
   if (
     typeof body.sessionId !== 'string' ||
-    body.sessionId.trim() === ''
+    !UUID_PATTERN.test(body.sessionId.trim())
   ) {
-    throw new Error('sessionId가 필요합니다.');
+    throw new RequestError('sessionId는 올바른 UUID여야 합니다.', 400);
   }
 
-  if (
-    typeof body.audioBase64 !== 'string' ||
-    body.audioBase64.trim() === ''
-  ) {
-    throw new Error('audioBase64가 필요합니다.');
+  if (typeof body.audioBase64 !== 'string' || body.audioBase64.trim() === '') {
+    throw new RequestError('audioBase64가 필요합니다.', 400);
   }
 
-  if (
-    !Number.isInteger(body.chunkIndex) ||
-    body.chunkIndex < 0
-  ) {
-    throw new Error(
-      'chunkIndex는 0 이상의 정수여야 합니다.'
-    );
+  if (body.mimeType && body.mimeType.split(';')[0].trim() !== 'audio/wav') {
+    throw new RequestError('현재 audio/wav 형식만 허용됩니다.', 415);
   }
 
-  if (
-    !Number.isFinite(body.chunkStartMs) ||
-    body.chunkStartMs < 0
-  ) {
-    throw new Error(
-      'chunkStartMs 값이 올바르지 않습니다.'
-    );
+  if (!Number.isInteger(body.chunkIndex) || body.chunkIndex < 0) {
+    throw new RequestError('chunkIndex는 0 이상의 정수여야 합니다.', 400);
+  }
+
+  if (!Number.isFinite(body.chunkStartMs) || body.chunkStartMs < 0) {
+    throw new RequestError('chunkStartMs 값이 올바르지 않습니다.', 400);
   }
 
   if (
     !Number.isFinite(body.chunkEndMs) ||
     body.chunkEndMs < body.chunkStartMs
   ) {
-    throw new Error(
-      'chunkEndMs 값이 올바르지 않습니다.'
-    );
+    throw new RequestError('chunkEndMs 값이 올바르지 않습니다.', 400);
   }
+}
+
+function decodeAudioBase64(audioBase64: string): Buffer {
+  const normalized = removeDataUrlPrefix(audioBase64);
+
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
+    throw new RequestError('오디오 Base64 형식이 올바르지 않습니다.', 400);
+  }
+
+  const audioBuffer = Buffer.from(normalized, 'base64');
+  if (audioBuffer.length === 0) {
+    throw new RequestError('전송된 오디오 데이터가 비어 있습니다.', 400);
+  }
+
+  if (
+    audioBuffer.length < 12 ||
+    audioBuffer.toString('ascii', 0, 4) !== 'RIFF' ||
+    audioBuffer.toString('ascii', 8, 12) !== 'WAVE'
+  ) {
+    throw new RequestError('유효한 WAV 파일이 아닙니다.', 415);
+  }
+
+  return audioBuffer;
 }
 
 async function ensureCallSession(
   supabase: SupabaseClient,
   sessionId: string
 ): Promise<void> {
-  const {
-    data: existing,
-    error: selectError,
-  } = await supabase
-    .from('call_sessions')
-    .select('id')
-    .eq('id', sessionId)
-    .maybeSingle();
+  const { error } = await supabase.from('call_sessions').upsert(
+    { id: sessionId, status: 'recording' },
+    { onConflict: 'id', ignoreDuplicates: true }
+  );
 
-  if (selectError) {
-    throw new Error(
-      formatSupabaseError(
-        'call_sessions 조회 실패',
-        selectError
-      )
-    );
-  }
-
-  if (existing) {
-    return;
-  }
-
-  const { error: insertError } =
-    await supabase
-      .from('call_sessions')
-      .insert({
-        id: sessionId,
-        status: 'recording',
-      });
-
-  if (insertError) {
-    throw new Error(
-      formatSupabaseError(
-        'call_sessions 생성 실패',
-        insertError
-      )
-    );
+  if (error) {
+    throw new Error(formatSupabaseError('call_sessions 생성 확인 실패', error));
   }
 }
 
@@ -314,147 +248,91 @@ async function saveTranscriptChunk(
     durationMs: number;
   }
 ): Promise<void> {
-  const { error } = await supabase
-    .from('transcript_chunks')
-    .insert({
+  const { error } = await supabase.from('transcript_chunks').upsert(
+    {
       session_id: input.sessionId,
       chunk_index: input.chunkIndex,
       transcript: input.transcript,
       audio_format: input.audioFormat,
       duration_ms: Math.round(input.durationMs),
-    });
+    },
+    { onConflict: 'session_id,chunk_index' }
+  );
 
   if (error) {
-    throw new Error(
-      formatSupabaseError(
-        'transcript_chunks 저장 실패',
-        error
-      )
-    );
+    throw new Error(formatSupabaseError('transcript_chunks 저장 실패', error));
   }
 }
 
 async function callClovaSpeech(input: {
   invokeUrl: string;
   secret: string;
-  audioBase64: string;
-  mimeType?: string;
+  audioBuffer: Buffer;
 }): Promise<ClovaSpeechResult> {
-  const normalizedBase64 =
-    removeDataUrlPrefix(input.audioBase64);
-
-  const audioBuffer = Buffer.from(
-    normalizedBase64,
-    'base64'
-  );
-
-  if (audioBuffer.length === 0) {
-    throw new Error(
-      '전송된 오디오 데이터가 비어 있습니다.'
-    );
-  }
-
   let requestUrl: URL;
 
   try {
     requestUrl = new URL(input.invokeUrl);
   } catch {
-    throw new Error(
-      'CLOVA_SPEECH_INVOKE_URL 형식이 올바르지 않습니다.'
-    );
+    throw new Error('CLOVA_SPEECH_INVOKE_URL 형식이 올바르지 않습니다.');
   }
 
   if (!requestUrl.searchParams.has('lang')) {
     requestUrl.searchParams.set('lang', 'Kor');
   }
 
-  const response = await fetch(
-    requestUrl.toString(),
-    {
-      method: 'POST',
-      headers: {
-        'X-CLOVASPEECH-API-KEY':
-          input.secret,
+  const response = await fetch(requestUrl.toString(), {
+    method: 'POST',
+    headers: {
+      'X-CLOVASPEECH-API-KEY': input.secret,
+      'Content-Type': 'application/octet-stream',
+    },
+    body: input.audioBuffer,
+  });
 
-        // 단문 인식 API에 바이너리 음원 전송
-        'Content-Type':
-          'application/octet-stream',
-      },
-      body: audioBuffer,
-    }
-  );
-
-  const responseText =
-    await response.text();
+  const responseText = await response.text();
 
   if (!response.ok) {
-    console.error(
-      '[CLOVA Speech] request failed:',
-      {
-        status: response.status,
-        statusText: response.statusText,
-        mimeType:
-          input.mimeType ||
-          'unknown',
-        audioBytes:
-          audioBuffer.length,
-        response:
-          responseText.slice(0, 1000),
-      }
-    );
+    console.error('[CLOVA Speech] request failed:', {
+      status: response.status,
+      statusText: response.statusText,
+      audioBytes: input.audioBuffer.length,
+      response: responseText.slice(0, 1000),
+    });
 
     throw new Error(
-      `CLOVA Speech 응답 오류 ` +
-        `${response.status} ` +
-        `${response.statusText}: ` +
+      `CLOVA Speech 응답 오류 ${response.status} ${response.statusText}: ` +
         responseText.slice(0, 500)
     );
   }
 
   if (!responseText.trim()) {
-    throw new Error(
-      'CLOVA Speech 응답 본문이 비어 있습니다.'
-    );
+    throw new Error('CLOVA Speech 응답 본문이 비어 있습니다.');
   }
 
   let json: ClovaSpeechResult;
-
   try {
-    json = JSON.parse(
-      responseText
-    ) as ClovaSpeechResult;
+    json = JSON.parse(responseText) as ClovaSpeechResult;
   } catch {
-    throw new Error(
-      `CLOVA Speech JSON 해석 실패: ` +
-        responseText.slice(0, 500)
-    );
+    throw new Error(`CLOVA Speech JSON 해석 실패: ${responseText.slice(0, 500)}`);
   }
 
   if (typeof json.text !== 'string') {
     throw new Error(
-      `CLOVA Speech 응답에 text 필드가 없습니다: ` +
-        responseText.slice(0, 500)
+      `CLOVA Speech 응답에 text 필드가 없습니다: ${responseText.slice(0, 500)}`
     );
   }
 
   return json;
 }
 
-function removeDataUrlPrefix(
-  audioBase64: string
-): string {
+function removeDataUrlPrefix(audioBase64: string): string {
   const trimmed = audioBase64.trim();
-
   const commaIndex = trimmed.indexOf(',');
 
-  if (
-    trimmed.startsWith('data:') &&
-    commaIndex >= 0
-  ) {
-    return trimmed.slice(commaIndex + 1);
-  }
-
-  return trimmed;
+  return trimmed.startsWith('data:') && commaIndex >= 0
+    ? trimmed.slice(commaIndex + 1)
+    : trimmed;
 }
 
 function formatSupabaseError(
@@ -466,33 +344,20 @@ function formatSupabaseError(
     hint?: string;
   }
 ): string {
-  const parts = [
+  return [
     prefix,
     error.message,
-    error.code
-      ? `code=${error.code}`
-      : undefined,
-    error.details
-      ? `details=${error.details}`
-      : undefined,
-    error.hint
-      ? `hint=${error.hint}`
-      : undefined,
-  ].filter(Boolean);
-
-  return parts.join(' | ');
+    error.code ? `code=${error.code}` : undefined,
+    error.details ? `details=${error.details}` : undefined,
+    error.hint ? `hint=${error.hint}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(' | ');
 }
 
-function getErrorMessage(
-  error: unknown
-): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  if (typeof error === 'string') {
-    return error;
-  }
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
 
   try {
     return JSON.stringify(error);
