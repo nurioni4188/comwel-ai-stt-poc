@@ -170,8 +170,8 @@ PR #5 병합 후 main `32b510ad246916a168c9c7007cd527e8e22dd0b0`를 Production�
 
 PR #7 병합 후 main `d2c1797f00c1d6d41ed8f5f150a0fa4e25c1624e`를 Production에 재배포하고 새 세션으로 최종 회귀검증을 완료했습니다.
 
-- 기준 main SHA: `d2c1797f00c1d6d41ed8f5f150a0fa4e25c1624e`
-- 기준 태그 예정: `v0.4.0-stt-ai-summary-refine`
+- 기능 병합 main SHA: `d2c1797f00c1d6d41ed8f5f150a0fa4e25c1624e`
+- 기준 태그: `v0.4.0-stt-ai-summary-refine`
 - Production URL: `https://comwel-ai-stt-poc.vercel.app`
 - Production 실제 녹음 및 STT 정상 동작 확인
 - v1: `complaint_summary_extractive_v1`, `source_type = extractive`, `status = superseded`, `is_current = false`
@@ -183,6 +183,7 @@ PR #7 병합 후 main `d2c1797f00c1d6d41ed8f5f150a0fa4e25c1624e`를 Production�
 - AI 정제본 직접 확정 방지 확인
 - 같은 세션 AI 정제 재실행 시 불필요한 추가 AI 버전이 생성되지 않음 확인
 - 자동 제출·자동 처분·자동 확정 없음 유지
+- Production 최종 회귀검증 완료
 
 ## 현재 범위
 
