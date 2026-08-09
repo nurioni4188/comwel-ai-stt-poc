@@ -11,13 +11,32 @@ interface SummaryApiResponse {
   detail?: string;
 }
 
+interface StructuredSummary {
+  summary: string;
+  requests: string[];
+  key_facts: string[];
+  needs_confirmation: string[];
+}
+
+interface AiRefineApiResponse {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+  draft?: {
+    content?: string;
+    versionNo?: number;
+    sourceType?: string;
+    structured?: StructuredSummary;
+  };
+}
+
 interface DraftMutationResponse {
   ok?: boolean;
   error?: string;
   detail?: string;
 }
 
-type ReviewState = 'idle' | 'generated' | 'saved' | 'confirmed';
+type ReviewState = 'idle' | 'generated' | 'refined' | 'saved' | 'confirmed';
 
 export default function TestCallPage() {
   const {
@@ -33,10 +52,15 @@ export default function TestCallPage() {
   } = useCallRecorder();
 
   const [summaryDraft, setSummaryDraft] = useState('');
+  const [structuredSummary, setStructuredSummary] =
+    useState<StructuredSummary | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [reviewMessage, setReviewMessage] = useState<string | null>(null);
   const [reviewState, setReviewState] = useState<ReviewState>('idle');
+  const [hasExtractiveDraft, setHasExtractiveDraft] = useState(false);
+  const [hasAiRefinedDraft, setHasAiRefinedDraft] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [isRefining, setIsRefining] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
 
@@ -52,7 +76,8 @@ export default function TestCallPage() {
   ).length;
   const hasRecognizedText = cumulativeText.trim().length > 0;
   const hasDraftText = summaryDraft.trim().length > 0;
-  const isReviewBusy = isSummarizing || isSaving || isConfirming;
+  const isReviewBusy =
+    isSummarizing || isRefining || isSaving || isConfirming;
   const isConfirmed = reviewState === 'confirmed';
 
   const handleRecordingClick = async () => {
@@ -74,7 +99,8 @@ export default function TestCallPage() {
       isSending ||
       isReviewBusy ||
       completedCount === 0 ||
-      !hasRecognizedText
+      !hasRecognizedText ||
+      hasAiRefinedDraft
     ) {
       return;
     }
@@ -100,9 +126,13 @@ export default function TestCallPage() {
       const nextSummary =
         typeof result.summary === 'string' ? result.summary.trim() : '';
       setSummaryDraft(nextSummary);
+      setStructuredSummary(null);
+      setHasExtractiveDraft(Boolean(nextSummary));
       setReviewState(nextSummary ? 'generated' : 'idle');
       setReviewMessage(
-        nextSummary ? '원문 기반 요지 초안이 생성되었습니다. 담당자가 수정할 수 있습니다.' : null
+        nextSummary
+          ? '원문 기반 요지 초안이 생성되었습니다. AI 정제 또는 담당자 직접 수정을 선택할 수 있습니다.'
+          : null
       );
     } catch (summaryRequestError) {
       const message = getErrorMessage(summaryRequestError);
@@ -110,6 +140,58 @@ export default function TestCallPage() {
       setSummaryError(message);
     } finally {
       setIsSummarizing(false);
+    }
+  };
+
+  const handleAiRefine = async () => {
+    if (
+      !hasExtractiveDraft ||
+      hasAiRefinedDraft ||
+      isReviewBusy ||
+      isConfirmed
+    ) {
+      return;
+    }
+
+    setIsRefining(true);
+    setSummaryError(null);
+    setReviewMessage(null);
+
+    try {
+      const response = await fetch('/api/stt-summary-refine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+      });
+      const result = (await response.json()) as AiRefineApiResponse;
+      if (!response.ok) {
+        throw new Error(
+          result.detail || result.error || `AI 정제 실패: ${response.status}`
+        );
+      }
+
+      const nextContent =
+        typeof result.draft?.content === 'string'
+          ? result.draft.content.trim()
+          : '';
+      const nextStructured = result.draft?.structured ?? null;
+      if (!nextContent || !nextStructured) {
+        throw new Error('AI 정제 응답에 검토용 내용이 없습니다.');
+      }
+
+      setSummaryDraft(nextContent);
+      setStructuredSummary(nextStructured);
+      setHasAiRefinedDraft(true);
+      setReviewState('refined');
+      setReviewMessage(
+        '생성형 AI 정제본을 새 버전으로 저장했습니다. 담당자가 내용을 검토·수정한 뒤 저장·확정해 주세요.'
+      );
+    } catch (refineError) {
+      const message = getErrorMessage(refineError);
+      console.error('[TestCallPage] AI refine failed:', refineError);
+      setSummaryError(message);
+    } finally {
+      setIsRefining(false);
     }
   };
 
@@ -134,7 +216,9 @@ export default function TestCallPage() {
       }
 
       setReviewState('saved');
-      setReviewMessage('담당자 수정본을 새 버전으로 저장했습니다. 이전 버전은 보존됩니다.');
+      setReviewMessage(
+        '담당자 수정본을 새 버전으로 저장했습니다. 이전 버전은 보존됩니다.'
+      );
     } catch (saveError) {
       const message = getErrorMessage(saveError);
       console.error('[TestCallPage] draft save failed:', saveError);
@@ -165,7 +249,9 @@ export default function TestCallPage() {
       }
 
       setReviewState('confirmed');
-      setReviewMessage('담당자 확정본으로 기록했습니다. 자동 제출·자동 처분은 수행하지 않습니다.');
+      setReviewMessage(
+        '담당자 확정본으로 기록했습니다. 자동 제출·자동 처분은 수행하지 않습니다.'
+      );
     } catch (confirmError) {
       const message = getErrorMessage(confirmError);
       console.error('[TestCallPage] draft confirm failed:', confirmError);
@@ -190,9 +276,12 @@ export default function TestCallPage() {
 
   function resetDraftReviewState() {
     setSummaryDraft('');
+    setStructuredSummary(null);
     setSummaryError(null);
     setReviewMessage(null);
     setReviewState('idle');
+    setHasExtractiveDraft(false);
+    setHasAiRefinedDraft(false);
   }
 
   return (
@@ -210,9 +299,7 @@ export default function TestCallPage() {
         <div className="recording-controls">
           <button
             type="button"
-            className={
-              isRecording ? 'record-button recording' : 'record-button'
-            }
+            className={isRecording ? 'record-button recording' : 'record-button'}
             onClick={() => void handleRecordingClick()}
             aria-pressed={isRecording}
           >
@@ -229,9 +316,7 @@ export default function TestCallPage() {
               <span className="status-badge sending">STT 처리 중</span>
             )}
             {completedCount > 0 && (
-              <span className="status-badge success">
-                완료 {completedCount}건
-              </span>
+              <span className="status-badge success">완료 {completedCount}건</span>
             )}
             {failedCount > 0 && (
               <span className="status-badge error">실패 {failedCount}건</span>
@@ -267,9 +352,7 @@ export default function TestCallPage() {
                   className={`chunk-item ${chunk.status}`}
                 >
                   <header className="chunk-header">
-                    <strong className="chunk-number">
-                      청크 {chunk.chunkIndex + 1}
-                    </strong>
+                    <strong className="chunk-number">청크 {chunk.chunkIndex + 1}</strong>
                     <span className="chunk-time">
                       {formatSeconds(chunk.chunkStartMs)}
                       <span aria-hidden="true"> → </span>
@@ -280,13 +363,11 @@ export default function TestCallPage() {
                   {chunk.status === 'sending' && (
                     <p className="chunk-placeholder">음성을 인식하고 있습니다…</p>
                   )}
-
                   {chunk.status === 'success' && (
                     <p className="chunk-text">
                       {chunk.text.trim() || '(인식된 내용 없음)'}
                     </p>
                   )}
-
                   {chunk.status === 'error' && (
                     <p className="chunk-error">
                       {chunk.error || 'STT 처리에 실패했습니다.'}
@@ -305,7 +386,6 @@ export default function TestCallPage() {
               <h2 id="summary-title">전체 통화 인식문</h2>
             </div>
           </div>
-
           <div className="cumulative-result" aria-live="polite">
             {cumulativeText || '(아직 인식된 내용이 없습니다.)'}
           </div>
@@ -317,7 +397,9 @@ export default function TestCallPage() {
               <p className="section-kicker">담당자 검토용</p>
               <h2 id="draft-title">민원 요지 초안</h2>
             </div>
-            <span className="section-meta">원문 기반 extractive v1</span>
+            <span className="section-meta">
+              {hasAiRefinedDraft ? '생성형 AI refined v1' : '원문 기반 extractive v1'}
+            </span>
           </div>
 
           <div className="summary-actions">
@@ -331,14 +413,34 @@ export default function TestCallPage() {
                 isReviewBusy ||
                 completedCount === 0 ||
                 !hasRecognizedText ||
-                isConfirmed
+                isConfirmed ||
+                hasAiRefinedDraft
               }
             >
               {isSummarizing ? '요지 생성 중…' : '민원 요지 초안 생성'}
             </button>
+
+            <button
+              type="button"
+              className="summary-button ai-refine-button"
+              onClick={() => void handleAiRefine()}
+              disabled={
+                !hasExtractiveDraft ||
+                hasAiRefinedDraft ||
+                isReviewBusy ||
+                isConfirmed
+              }
+            >
+              {isRefining
+                ? 'AI 정제본 생성 중…'
+                : hasAiRefinedDraft
+                  ? 'AI 정제본 생성 완료'
+                  : 'AI 정제본 생성'}
+            </button>
+
             <p className="summary-note">
-              원문 기반 1차 초안을 만든 뒤 담당자가 직접 수정·저장·확정합니다.
-              확정해도 자동 제출·자동 처분은 수행하지 않습니다.
+              원문 기반 1차 초안을 만든 뒤 생성형 AI 정제 또는 담당자 직접 수정을 선택합니다.
+              AI 결과도 담당자가 직접 검토·수정·확정하며 자동 제출·자동 처분은 수행하지 않습니다.
             </p>
           </div>
 
@@ -352,6 +454,18 @@ export default function TestCallPage() {
           {reviewMessage && (
             <div className="review-message" role="status">
               {reviewMessage}
+            </div>
+          )}
+
+          {structuredSummary && (
+            <div className="ai-structured-result" aria-label="AI 구조화 결과">
+              <StructuredSection title="민원 요지" items={[structuredSummary.summary]} />
+              <StructuredSection title="요청·문의" items={structuredSummary.requests} />
+              <StructuredSection title="원문 확인 사실" items={structuredSummary.key_facts} />
+              <StructuredSection
+                title="추가 확인 필요"
+                items={structuredSummary.needs_confirmation}
+              />
             </div>
           )}
 
@@ -413,8 +527,26 @@ export default function TestCallPage() {
   );
 }
 
+function StructuredSection({ title, items }: { title: string; items: string[] }) {
+  return (
+    <section className="ai-structured-section">
+      <strong>{title}</strong>
+      {items.length > 0 ? (
+        <ul>
+          {items.map((item, index) => (
+            <li key={`${title}-${index}`}>{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <p>없음</p>
+      )}
+    </section>
+  );
+}
+
 function formatReviewState(state: ReviewState): string {
   if (state === 'generated') return '초안 생성';
+  if (state === 'refined') return 'AI 정제';
   if (state === 'saved') return '수정본 저장';
   if (state === 'confirmed') return '확정';
   return '대기';
@@ -427,7 +559,6 @@ function formatSeconds(milliseconds: number): string {
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
-
   try {
     return JSON.stringify(error);
   } catch {
