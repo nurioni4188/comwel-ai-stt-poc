@@ -20,7 +20,7 @@
 
 ## 민원 요지 초안 — extractive v1
 
-`feat/stt-poc-next`의 첫 확장 단계는 생성형 모델을 바로 연결하지 않고, 완료된 세션의 STT 원문 중 요청·문의와 관련된 문장을 서버에서 추출해 담당자 검토용 요지 초안으로 저장합니다.
+현재 단계는 생성형 모델을 바로 연결하지 않고, 완료된 세션의 STT 원문 중 요청·문의와 관련된 문장을 서버에서 추출해 담당자 검토용 요지 초안으로 저장합니다.
 
 - 세션이 `completed`인 경우에만 생성
 - `transcript_chunks`를 `chunk_index` 순서로 조회
@@ -28,6 +28,8 @@
 - 결과는 `draft_type = complaint_summary_extractive_v1`로 `stt_poc.drafts`에 저장
 - 같은 세션에서 다시 생성하면 기존 최신 초안을 갱신
 - 화면에서 전체 통화 인식문과 요지 초안을 분리 표시
+- 빈 STT에서는 요지 생성 버튼을 비활성화
+- 새 녹음 시작 시 이전 요지 화면 상태를 초기화
 
 이 단계의 목적은 STT → 세션 종료 → 요지 생성 → drafts 저장 흐름을 먼저 안정화하는 것입니다. 생성형 AI 기반 재작성·분류·답변 초안은 이 흐름 검증 후 별도 단계에서 연결합니다.
 
@@ -88,48 +90,38 @@ vercel dev
 9. 완료된 세션에서 민원 요지 초안을 생성할 수 있어야 합니다.
 10. 생성된 요지가 `stt_poc.drafts`에 저장되어야 합니다.
 
-검증 SQL 예시:
-
-```sql
-select
-  session_id,
-  chunk_index,
-  transcript,
-  audio_format,
-  duration_ms,
-  created_at
-from stt_poc.transcript_chunks
-where session_id = '<검증할 UUID>'
-order by chunk_index;
-```
-
-```sql
-select
-  session_id,
-  draft_type,
-  content,
-  updated_at
-from stt_poc.drafts
-where session_id = '<검증할 UUID>'
-order by updated_at desc;
-```
-
 ## Production 검증 기준선
+
+### v0.1.0 — WAV STT 기준선
 
 2026-08-09 기준 Production 배포와 실제 마이크 녹음을 완료했습니다.
 
 - 기준 main SHA: `ee6d206`
 - 기준 태그: `v0.1.0-stt-poc`
 - Production URL: `https://comwel-ai-stt-poc.vercel.app`
-- Production 환경변수 4종 적용 확인
 - 실제 녹음에서 10초 단위 WAV 청크 STT 결과 표시 확인
 - 검증 세션: `fcbc1819-f89b-4c52-94b3-fb6eab732531`
 - 해당 세션 `status = completed`, `ended_at` 기록 확인
 - `chunk_index` 0부터 연속 저장 확인
 - 검사 청크 `audio_format = audio/wav` 확인
-- Production 화면상 STT 처리 실패 없음
 
-이 기준선 이후의 기능 변경은 `main`에서 직접 수정하지 않고 별도 기능 브랜치에서 진행합니다.
+### v0.2.0 후보 — STT + 민원 요지 초안 기준선
+
+PR #3 병합 후 main `3491d9c`를 Production에 배포하고 회귀검증을 완료했습니다.
+
+- 기준 main SHA: `3491d9c`
+- Production URL: `https://comwel-ai-stt-poc.vercel.app`
+- Production 실제 녹음 및 STT 정상 동작 확인
+- 민원 요지 초안 생성 정상 동작 확인
+- Production 검증 세션: `dd32ce90-47cd-44d4-8a45-062eb9fdf306`
+- 검증 세션 `status = completed`, `ended_at` 기록 확인
+- `stt_poc.drafts` 저장 확인
+- `draft_type = complaint_summary_extractive_v1` 확인
+- 동일 세션 재생성 시 불필요한 중복 draft가 늘지 않는 구조 확인
+- 새 녹음 시작 시 이전 요지 초기화 확인
+- 빈 STT에서는 요지 생성 버튼 비활성화 확인
+
+권장 태그는 `v0.2.0-stt-summary`입니다. 태그 생성 전에는 이 SHA를 검증 완료 기준점으로 유지합니다.
 
 ## 현재 범위
 
