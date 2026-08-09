@@ -1,6 +1,15 @@
 // src/pages/TestCallPage.tsx
 
+import { useState } from 'react';
 import { useCallRecorder } from '../hooks/useCallRecorder';
+
+interface SummaryApiResponse {
+  ok?: boolean;
+  summary?: string;
+  mode?: string;
+  error?: string;
+  detail?: string;
+}
 
 export default function TestCallPage() {
   const {
@@ -15,6 +24,10 @@ export default function TestCallPage() {
     resetRecording,
   } = useCallRecorder();
 
+  const [summaryDraft, setSummaryDraft] = useState('');
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+
   const completedCount = chunks.filter(
     (chunk) => chunk.status === 'success'
   ).length;
@@ -27,11 +40,52 @@ export default function TestCallPage() {
       if (isRecording) {
         await stopRecording();
       } else {
+        setSummaryDraft('');
+        setSummaryError(null);
         await startRecording();
       }
     } catch (clickError) {
       console.error('[TestCallPage] recording button failed:', clickError);
     }
+  };
+
+  const handleSummaryDraft = async () => {
+    if (isRecording || isSending || isSummarizing || completedCount === 0) return;
+
+    setIsSummarizing(true);
+    setSummaryError(null);
+
+    try {
+      const response = await fetch('/api/stt-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+      });
+
+      const result = (await response.json()) as SummaryApiResponse;
+      if (!response.ok) {
+        throw new Error(
+          result.detail || result.error || `요지 생성 실패: ${response.status}`
+        );
+      }
+
+      setSummaryDraft(
+        typeof result.summary === 'string' ? result.summary.trim() : ''
+      );
+    } catch (summaryRequestError) {
+      const message = getErrorMessage(summaryRequestError);
+      console.error('[TestCallPage] summary failed:', summaryRequestError);
+      setSummaryError(message);
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  const handleReset = () => {
+    if (isSending || isSummarizing) return;
+    setSummaryDraft('');
+    setSummaryError(null);
+    resetRecording();
   };
 
   return (
@@ -141,7 +195,7 @@ export default function TestCallPage() {
           <div className="section-heading">
             <div>
               <p className="section-kicker">누적 결과</p>
-              <h2 id="summary-title">민원입력요지</h2>
+              <h2 id="summary-title">전체 통화 인식문</h2>
             </div>
           </div>
 
@@ -150,13 +204,54 @@ export default function TestCallPage() {
           </div>
         </section>
 
-        {!isRecording && (chunks.length > 0 || error) && (
+        <section className="result-section" aria-labelledby="draft-title">
+          <div className="section-heading">
+            <div>
+              <p className="section-kicker">담당자 검토용</p>
+              <h2 id="draft-title">민원 요지 초안</h2>
+            </div>
+            <span className="section-meta">원문 기반 extractive v1</span>
+          </div>
+
+          <div className="summary-actions">
+            <button
+              type="button"
+              className="summary-button"
+              onClick={() => void handleSummaryDraft()}
+              disabled={
+                isRecording ||
+                isSending ||
+                isSummarizing ||
+                completedCount === 0
+              }
+            >
+              {isSummarizing ? '요지 생성 중…' : '민원 요지 초안 생성'}
+            </button>
+            <p className="summary-note">
+              현재 단계는 생성형 AI가 아니라 STT 원문에서 요청·문의 관련 문장을 추출해
+              drafts에 저장하는 안전한 1차 흐름입니다.
+            </p>
+          </div>
+
+          {summaryError && (
+            <div className="error-message" role="alert">
+              <strong>요지 생성 오류</strong>
+              <span>{summaryError}</span>
+            </div>
+          )}
+
+          <div className="summary-result" aria-live="polite">
+            {summaryDraft || '(녹음 종료 후 요지 초안을 생성할 수 있습니다.)'}
+          </div>
+        </section>
+
+        {!isRecording && (chunks.length > 0 || error || summaryDraft) && (
           <div className="footer-actions">
             <button
               type="button"
               className="reset-button"
-              onClick={resetRecording}
-              disabled={isSending}
+              onClick={handleReset}
+              disabled={isSending || isSummarizing}
             >
               결과 초기화
             </button>
@@ -169,4 +264,15 @@ export default function TestCallPage() {
 
 function formatSeconds(milliseconds: number): string {
   return `${(Math.max(0, milliseconds) / 1000).toFixed(1)}초`;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return '알 수 없는 오류';
+  }
 }
