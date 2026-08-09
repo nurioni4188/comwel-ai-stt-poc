@@ -53,7 +53,7 @@
 - [x] Production 검증 세션 `dd32ce90-47cd-44d4-8a45-062eb9fdf306`
 - [x] Production `stt_poc.drafts` 저장 확인
 
-## 담당자 수정·확정 — v0.3.0 후보 / PR #5
+## 담당자 수정·확정 — v0.3.0 / PR #5
 
 - [x] DB migration 작성
 - [x] `/api/stt-draft-save` 구현
@@ -124,11 +124,32 @@
 - [x] 같은 세션에서 AI 정제 재실행 후 불필요한 v4 AI 버전이 생성되지 않음
 - [x] 자동 제출·자동 처분·자동 확정 없음 확인
 
+## PR #7 병합 후 Production 최종 회귀검증
+
+- [x] PR #7 main 병합 완료
+- [x] 병합 main SHA `d2c1797f00c1d6d41ed8f5f150a0fa4e25c1624e`
+- [x] Production `OPENAI_API_KEY` 등록 및 재배포 완료
+- [x] Production `OPENAI_MODEL` 등록 및 재배포 완료
+- [x] Production URL `https://comwel-ai-stt-poc.vercel.app` 활성화
+- [x] Production 새 테스트 세션에서 STT 정상 동작
+- [x] v1 `extractive / superseded / is_current=false`
+- [x] v2 `ai / superseded / is_current=false`
+- [x] v3 `staff / confirmed / is_current=true`
+- [x] v2 `parent_draft_id` 존재 및 v1 참조
+- [x] v3 `parent_draft_id` 존재 및 v2 참조
+- [x] v3 `confirmed_at is not null`
+- [x] v3 `confirmed_by = staff`
+- [x] AI 정제본 직접 확정 방지 유지
+- [x] 자동 제출·자동 처분·자동 확정 없음 유지
+- [x] Production 최종 회귀검증 완료
+
 ## 기준선 이후 원칙
 
 - WAV STT 기준 태그는 `v0.1.0-stt-poc`입니다.
 - STT + 민원 요지 기준 태그는 `v0.2.0-stt-summary`입니다.
-- 담당자 수정·확정 기준 태그 권장값은 `v0.3.0-stt-draft-review`입니다.
+- 담당자 수정·확정 기준 태그는 `v0.3.0-stt-draft-review`입니다.
+- 생성형 AI 민원 요지 정제 기준 태그 예정값은 `v0.4.0-stt-ai-summary-refine`입니다.
 - 기준선 이후 기능 변경은 `main`에 직접 반영하지 않고 별도 기능 브랜치에서 진행합니다.
 - 비밀값은 Vercel 환경변수에서만 관리하고 Git 저장소에는 커밋하지 않습니다.
+- AI 정제본은 자동 확정하지 않으며 담당자 검토·수정본만 확정할 수 있습니다.
 - 담당자 확정은 자동 제출·자동 처분을 의미하지 않습니다.
