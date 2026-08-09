@@ -11,7 +11,25 @@
 → /api/stt-ingest
 → CLOVA Speech 단문 인식
 → stt_poc.call_sessions / transcript_chunks 저장
+→ 녹음 종료 및 세션 completed
+→ /api/stt-summary
+→ STT 원문 기반 민원 요지 초안
+→ stt_poc.drafts 저장
+→ 담당자 검토
 ```
+
+## 민원 요지 초안 — extractive v1
+
+`feat/stt-poc-next`의 첫 확장 단계는 생성형 모델을 바로 연결하지 않고, 완료된 세션의 STT 원문 중 요청·문의와 관련된 문장을 서버에서 추출해 담당자 검토용 요지 초안으로 저장합니다.
+
+- 세션이 `completed`인 경우에만 생성
+- `transcript_chunks`를 `chunk_index` 순서로 조회
+- STT 원문에 없는 사실·사건번호·결론을 새로 만들지 않음
+- 결과는 `draft_type = complaint_summary_extractive_v1`로 `stt_poc.drafts`에 저장
+- 같은 세션에서 다시 생성하면 기존 최신 초안을 갱신
+- 화면에서 전체 통화 인식문과 요지 초안을 분리 표시
+
+이 단계의 목적은 STT → 세션 종료 → 요지 생성 → drafts 저장 흐름을 먼저 안정화하는 것입니다. 생성형 AI 기반 재작성·분류·답변 초안은 이 흐름 검증 후 별도 단계에서 연결합니다.
 
 ## 보안 원칙
 
@@ -67,6 +85,8 @@ vercel dev
 6. `audio_format`은 `audio/wav`로 저장되어야 합니다.
 7. 같은 청크가 재전송되면 `(session_id, chunk_index)` 기준으로 갱신되어 중복 행이 생기지 않아야 합니다.
 8. 녹음 종료 후 `call_sessions.status = completed`, `ended_at`이 기록되어야 합니다.
+9. 완료된 세션에서 민원 요지 초안을 생성할 수 있어야 합니다.
+10. 생성된 요지가 `stt_poc.drafts`에 저장되어야 합니다.
 
 검증 SQL 예시:
 
@@ -83,11 +103,23 @@ where session_id = '<검증할 UUID>'
 order by chunk_index;
 ```
 
+```sql
+select
+  session_id,
+  draft_type,
+  content,
+  updated_at
+from stt_poc.drafts
+where session_id = '<검증할 UUID>'
+order by updated_at desc;
+```
+
 ## Production 검증 기준선
 
 2026-08-09 기준 Production 배포와 실제 마이크 녹음을 완료했습니다.
 
 - 기준 main SHA: `ee6d206`
+- 기준 태그: `v0.1.0-stt-poc`
 - Production URL: `https://comwel-ai-stt-poc.vercel.app`
 - Production 환경변수 4종 적용 확인
 - 실제 녹음에서 10초 단위 WAV 청크 STT 결과 표시 확인
@@ -104,4 +136,5 @@ order by chunk_index;
 - 직원 시범 검증용 독립 PoC
 - 자동 민원 등록·자동 처분 기능 없음
 - 녹음 원본 파일은 Supabase에 저장하지 않음
+- 민원 요지 초안은 담당자 검토용이며 자동 제출하지 않음
 - 운영 활성화 전 별도 개인정보·보존기간·접근통제 검토 필요
