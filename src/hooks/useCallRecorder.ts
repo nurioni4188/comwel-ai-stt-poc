@@ -1,11 +1,6 @@
 // src/hooks/useCallRecorder.ts
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const CHUNK_DURATION_MS = 10_000;
 const TARGET_SAMPLE_RATE = 16_000;
@@ -19,7 +14,7 @@ export interface SttChunkResult {
   error?: string;
 }
 
-interface SttIngestResponse {
+interface SttApiResponse {
   ok?: boolean;
   text?: string;
   chunkIndex?: number;
@@ -41,94 +36,49 @@ export interface UseCallRecorderResult {
 }
 
 /**
- * 전화 민원 STT PoC용 녹음 훅
+ * 마이크 PCM을 10초 단위 16kHz·mono·16-bit WAV로 변환해
+ * /api/stt-ingest로 순차 전송합니다.
  *
- * 처리 흐름:
- * 마이크 입력
- * → Web Audio API로 PCM 수집
- * → 10초 단위 분할
- * → 16kHz / mono / 16-bit WAV 생성
- * → Base64 변환
- * → /api/stt-ingest 전송
+ * 녹음을 새로 시작할 때마다 새 sessionId를 발급하고,
+ * 모든 청크 전송이 끝난 뒤 세션 상태를 completed로 변경합니다.
  */
 export function useCallRecorder(
   providedSessionId?: string
 ): UseCallRecorderResult {
-  const generatedSessionIdRef = useRef(
-    providedSessionId || crypto.randomUUID()
-  );
+  const initialSessionId = providedSessionId || crypto.randomUUID();
+  const [sessionId, setSessionId] = useState(initialSessionId);
+  const sessionIdRef = useRef(initialSessionId);
 
-  const [isRecording, setIsRecording] =
-    useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [chunks, setChunks] = useState<SttChunkResult[]>([]);
 
-  const [isSending, setIsSending] =
-    useState(false);
-
-  const [error, setError] =
-    useState<string | null>(null);
-
-  const [chunks, setChunks] =
-    useState<SttChunkResult[]>([]);
-
-  const streamRef =
-    useRef<MediaStream | null>(null);
-
-  const audioContextRef =
-    useRef<AudioContext | null>(null);
-
-  const sourceNodeRef =
-    useRef<MediaStreamAudioSourceNode | null>(
-      null
-    );
-
-  const processorNodeRef =
-    useRef<ScriptProcessorNode | null>(null);
-
-  const muteGainRef =
-    useRef<GainNode | null>(null);
-
-  const pcmBuffersRef =
-    useRef<Float32Array[]>([]);
-
-  const chunkTimerRef =
-    useRef<number | null>(null);
-
-  const chunkIndexRef =
-    useRef(0);
-
-  const recordingStartedAtRef =
-    useRef(0);
-
-  const currentChunkStartedAtRef =
-    useRef(0);
-
-  const sendQueueRef =
-    useRef<Promise<void>>(Promise.resolve());
-
-  const mountedRef =
-    useRef(true);
-
-  const sessionId =
-    generatedSessionIdRef.current;
+  const streamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
+  const muteGainRef = useRef<GainNode | null>(null);
+  const pcmBuffersRef = useRef<Float32Array[]>([]);
+  const chunkTimerRef = useRef<number | null>(null);
+  const chunkIndexRef = useRef(0);
+  const recordingStartedAtRef = useRef(0);
+  const currentChunkStartedAtRef = useRef(0);
+  const sendQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const mountedRef = useRef(true);
 
   const cumulativeText = chunks
     .filter(
       (chunk) =>
-        chunk.status === 'success' &&
-        chunk.text.trim() !== ''
+        chunk.status === 'success' && chunk.text.trim() !== ''
     )
     .map((chunk) => chunk.text.trim())
     .join(' ');
 
-  /**
-   * WAV 청크를 서버로 전송합니다.
-   *
-   * 여러 청크가 동시에 생성되더라도 전송 순서가
-   * 섞이지 않도록 Promise 큐에서 직렬 처리합니다.
-   */
   const enqueueChunkUpload = useCallback(
     (
       wavBlob: Blob,
+      targetSessionId: string,
       chunkIndex: number,
       chunkStartMs: number,
       chunkEndMs: number
@@ -144,472 +94,297 @@ export function useCallRecorder(
         },
       ]);
 
-      sendQueueRef.current =
-        sendQueueRef.current
-          .then(async () => {
-            if (mountedRef.current) {
-              setIsSending(true);
+      sendQueueRef.current = sendQueueRef.current
+        .then(async () => {
+          if (mountedRef.current) setIsSending(true);
+
+          try {
+            const audioBase64 = await blobToBase64(wavBlob);
+            const response = await fetch('/api/stt-ingest', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                sessionId: targetSessionId,
+                chunkIndex,
+                chunkStartMs,
+                chunkEndMs,
+                audioBase64,
+                mimeType: 'audio/wav',
+              }),
+            });
+
+            const result = (await response.json()) as SttApiResponse;
+            if (!response.ok) {
+              throw new Error(
+                result.detail ||
+                  result.error ||
+                  `ingest 실패: ${response.status}`
+              );
             }
 
-            try {
-              const audioBase64 =
-                await blobToBase64(wavBlob);
+            if (!mountedRef.current) return;
 
-              const response = await fetch(
-                '/api/stt-ingest',
-                {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type':
-                      'application/json',
-                  },
-                  body: JSON.stringify({
-                    sessionId,
-                    chunkIndex,
-                    chunkStartMs,
-                    chunkEndMs,
-                    audioBase64,
-                    mimeType: 'audio/wav',
-                  }),
-                }
-              );
+            setChunks((previous) =>
+              previous.map((chunk) =>
+                chunk.chunkIndex === chunkIndex
+                  ? {
+                      ...chunk,
+                      text:
+                        typeof result.text === 'string'
+                          ? result.text
+                          : '',
+                      status: 'success',
+                      error: undefined,
+                    }
+                  : chunk
+              )
+            );
+            setError(null);
+          } catch (uploadError) {
+            const message = getErrorMessage(uploadError);
+            console.error(
+              '[useCallRecorder] chunk upload failed:',
+              uploadError
+            );
 
-              const result =
-                (await response.json()) as
-                  SttIngestResponse;
+            if (!mountedRef.current) return;
 
-              if (!response.ok) {
-                throw new Error(
-                  result.detail ||
-                    result.error ||
-                    `ingest 실패: ${response.status}`
-                );
-              }
-
-              if (!mountedRef.current) {
-                return;
-              }
-
-              setChunks((previous) =>
-                previous.map((chunk) =>
-                  chunk.chunkIndex ===
-                  chunkIndex
-                    ? {
-                        ...chunk,
-                        text:
-                          typeof result.text ===
-                          'string'
-                            ? result.text
-                            : '',
-                        status: 'success',
-                        error: undefined,
-                      }
-                    : chunk
-                )
-              );
-
-              setError(null);
-            } catch (uploadError) {
-              const message =
-                getErrorMessage(uploadError);
-
-              console.error(
-                '[useCallRecorder] chunk upload failed:',
-                uploadError
-              );
-
-              if (!mountedRef.current) {
-                return;
-              }
-
-              setChunks((previous) =>
-                previous.map((chunk) =>
-                  chunk.chunkIndex ===
-                  chunkIndex
-                    ? {
-                        ...chunk,
-                        status: 'error',
-                        error: message,
-                      }
-                    : chunk
-                )
-              );
-
-              setError(message);
-            }
-          })
-          .finally(() => {
-            if (mountedRef.current) {
-              setIsSending(false);
-            }
-          });
+            setChunks((previous) =>
+              previous.map((chunk) =>
+                chunk.chunkIndex === chunkIndex
+                  ? { ...chunk, status: 'error', error: message }
+                  : chunk
+              )
+            );
+            setError(message);
+          }
+        })
+        .finally(() => {
+          if (mountedRef.current) setIsSending(false);
+        });
     },
-    [sessionId]
+    []
   );
 
-  /**
-   * 현재까지 쌓인 PCM을 WAV로 변환해 전송합니다.
-   */
-  const flushCurrentChunk =
-    useCallback(async () => {
-      const audioContext =
-        audioContextRef.current;
+  const flushCurrentChunk = useCallback(async () => {
+    const audioContext = audioContextRef.current;
+    if (!audioContext) return;
 
-      if (!audioContext) {
-        return;
-      }
+    const collectedBuffers = pcmBuffersRef.current;
+    pcmBuffersRef.current = [];
 
-      const collectedBuffers =
-        pcmBuffersRef.current;
+    const totalSamples = collectedBuffers.reduce(
+      (sum, buffer) => sum + buffer.length,
+      0
+    );
+    if (totalSamples === 0) return;
 
-      pcmBuffersRef.current = [];
+    const mergedSamples = mergeFloat32Arrays(
+      collectedBuffers,
+      totalSamples
+    );
+    const resampledSamples = resampleLinear(
+      mergedSamples,
+      audioContext.sampleRate,
+      TARGET_SAMPLE_RATE
+    );
+    if (resampledSamples.length === 0) return;
 
-      const totalSamples =
-        collectedBuffers.reduce(
-          (sum, buffer) =>
-            sum + buffer.length,
-          0
-        );
+    const wavBuffer = encodeWav16BitMono(
+      resampledSamples,
+      TARGET_SAMPLE_RATE
+    );
+    const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' });
 
-      // 녹음 데이터가 없는 빈 청크는 보내지 않습니다.
-      if (totalSamples === 0) {
-        return;
-      }
+    const elapsedMs = Math.max(
+      0,
+      Math.round(performance.now() - recordingStartedAtRef.current)
+    );
+    const chunkStartMs = currentChunkStartedAtRef.current;
+    const chunkEndMs = Math.max(chunkStartMs, elapsedMs);
+    currentChunkStartedAtRef.current = chunkEndMs;
 
-      const mergedSamples =
-        mergeFloat32Arrays(
-          collectedBuffers,
-          totalSamples
-        );
+    const chunkIndex = chunkIndexRef.current;
+    chunkIndexRef.current += 1;
 
-      const resampledSamples =
-        resampleLinear(
-          mergedSamples,
-          audioContext.sampleRate,
-          TARGET_SAMPLE_RATE
-        );
+    enqueueChunkUpload(
+      wavBlob,
+      sessionIdRef.current,
+      chunkIndex,
+      chunkStartMs,
+      chunkEndMs
+    );
+  }, [enqueueChunkUpload]);
 
-      if (resampledSamples.length === 0) {
-        return;
-      }
+  const stopAudioResources = useCallback(async () => {
+    if (chunkTimerRef.current !== null) {
+      window.clearInterval(chunkTimerRef.current);
+      chunkTimerRef.current = null;
+    }
 
-      const wavBuffer = encodeWav16BitMono(
-        resampledSamples,
-        TARGET_SAMPLE_RATE
+    if (processorNodeRef.current) {
+      processorNodeRef.current.onaudioprocess = null;
+      processorNodeRef.current.disconnect();
+      processorNodeRef.current = null;
+    }
+
+    sourceNodeRef.current?.disconnect();
+    sourceNodeRef.current = null;
+
+    muteGainRef.current?.disconnect();
+    muteGainRef.current = null;
+
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+
+    const context = audioContextRef.current;
+    audioContextRef.current = null;
+    if (context && context.state !== 'closed') await context.close();
+  }, []);
+
+  const completeSession = useCallback(async (targetSessionId: string) => {
+    const response = await fetch('/api/stt-session-complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: targetSessionId }),
+    });
+
+    const result = (await response.json()) as SttApiResponse;
+    if (!response.ok) {
+      throw new Error(
+        result.detail ||
+          result.error ||
+          `세션 완료 처리 실패: ${response.status}`
       );
+    }
+  }, []);
 
-      const wavBlob = new Blob(
-        [wavBuffer],
-        {
-          type: 'audio/wav',
-        }
-      );
+  const startRecording = useCallback(async () => {
+    if (isRecording || isSending) return;
 
-      const elapsedMs = Math.max(
-        0,
-        Math.round(
-          performance.now() -
-            recordingStartedAtRef.current
-        )
-      );
+    const newSessionId = crypto.randomUUID();
+    sessionIdRef.current = newSessionId;
+    setSessionId(newSessionId);
+    setError(null);
+    setChunks([]);
 
-      const chunkStartMs =
-        currentChunkStartedAtRef.current;
+    chunkIndexRef.current = 0;
+    pcmBuffersRef.current = [];
+    currentChunkStartedAtRef.current = 0;
+    sendQueueRef.current = Promise.resolve();
 
-      const chunkEndMs = Math.max(
-        chunkStartMs,
-        elapsedMs
-      );
-
-      currentChunkStartedAtRef.current =
-        chunkEndMs;
-
-      const chunkIndex =
-        chunkIndexRef.current;
-
-      chunkIndexRef.current += 1;
-
-      enqueueChunkUpload(
-        wavBlob,
-        chunkIndex,
-        chunkStartMs,
-        chunkEndMs
-      );
-    }, [enqueueChunkUpload]);
-
-  const stopAudioResources =
-    useCallback(async () => {
-      if (chunkTimerRef.current !== null) {
-        window.clearInterval(
-          chunkTimerRef.current
-        );
-
-        chunkTimerRef.current = null;
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('이 브라우저는 마이크 녹음을 지원하지 않습니다.');
       }
 
-      if (processorNodeRef.current) {
-        processorNodeRef.current.onaudioprocess =
-          null;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
 
-        processorNodeRef.current.disconnect();
-        processorNodeRef.current = null;
+      const AudioContextClass =
+        window.AudioContext || getWebkitAudioContext();
+      if (!AudioContextClass) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error('이 브라우저는 Web Audio API를 지원하지 않습니다.');
       }
 
-      if (sourceNodeRef.current) {
-        sourceNodeRef.current.disconnect();
-        sourceNodeRef.current = null;
-      }
+      const audioContext = new AudioContextClass();
+      if (audioContext.state === 'suspended') await audioContext.resume();
 
-      if (muteGainRef.current) {
-        muteGainRef.current.disconnect();
-        muteGainRef.current = null;
-      }
+      const sourceNode = audioContext.createMediaStreamSource(stream);
+      const processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+      const muteGain = audioContext.createGain();
+      muteGain.gain.value = 0;
 
-      if (streamRef.current) {
-        streamRef.current
-          .getTracks()
-          .forEach((track) => track.stop());
+      processorNode.onaudioprocess = (event) => {
+        const channelData = event.inputBuffer.getChannelData(0);
+        pcmBuffersRef.current.push(new Float32Array(channelData));
+      };
 
-        streamRef.current = null;
-      }
+      sourceNode.connect(processorNode);
+      processorNode.connect(muteGain);
+      muteGain.connect(audioContext.destination);
 
-      if (audioContextRef.current) {
-        const context =
-          audioContextRef.current;
+      streamRef.current = stream;
+      audioContextRef.current = audioContext;
+      sourceNodeRef.current = sourceNode;
+      processorNodeRef.current = processorNode;
+      muteGainRef.current = muteGain;
 
-        audioContextRef.current = null;
+      recordingStartedAtRef.current = performance.now();
+      chunkTimerRef.current = window.setInterval(() => {
+        void flushCurrentChunk();
+      }, CHUNK_DURATION_MS);
 
-        if (context.state !== 'closed') {
-          await context.close();
-        }
-      }
-    }, []);
-
-  const startRecording =
-    useCallback(async () => {
-      if (isRecording) {
-        return;
-      }
-
-      setError(null);
-      setChunks([]);
-
-      chunkIndexRef.current = 0;
-      pcmBuffersRef.current = [];
-      sendQueueRef.current =
-        Promise.resolve();
-
-      try {
-        if (
-          !navigator.mediaDevices ||
-          !navigator.mediaDevices.getUserMedia
-        ) {
-          throw new Error(
-            '이 브라우저는 마이크 녹음을 지원하지 않습니다.'
-          );
-        }
-
-        const stream =
-          await navigator.mediaDevices.getUserMedia(
-            {
-              audio: {
-                channelCount: 1,
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-              },
-            }
-          );
-
-        const AudioContextClass =
-          window.AudioContext ||
-          getWebkitAudioContext();
-
-        if (!AudioContextClass) {
-          stream
-            .getTracks()
-            .forEach((track) =>
-              track.stop()
-            );
-
-          throw new Error(
-            '이 브라우저는 Web Audio API를 지원하지 않습니다.'
-          );
-        }
-
-        const audioContext =
-          new AudioContextClass();
-
-        if (
-          audioContext.state ===
-          'suspended'
-        ) {
-          await audioContext.resume();
-        }
-
-        const sourceNode =
-          audioContext.createMediaStreamSource(
-            stream
-          );
-
-        /*
-         * ScriptProcessorNode는 구형 API이지만,
-         * 별도의 AudioWorklet 파일 없이 로컬 PoC에서
-         * PCM을 안정적으로 얻기 위해 사용합니다.
-         */
-        const processorNode =
-          audioContext.createScriptProcessor(
-            4096,
-            1,
-            1
-          );
-
-        /*
-         * processor를 destination에 연결해야
-         * onaudioprocess가 계속 실행됩니다.
-         * 마이크 소리가 스피커로 출력되지 않도록
-         * Gain을 0으로 설정합니다.
-         */
-        const muteGain =
-          audioContext.createGain();
-
-        muteGain.gain.value = 0;
-
-        processorNode.onaudioprocess = (
-          event
-        ) => {
-          const channelData =
-            event.inputBuffer.getChannelData(
-              0
-            );
-
-          /*
-           * getChannelData 결과는 다음 오디오 처리 때
-           * 재사용될 수 있으므로 반드시 복사합니다.
-           */
-          pcmBuffersRef.current.push(
-            new Float32Array(channelData)
-          );
-        };
-
-        sourceNode.connect(processorNode);
-        processorNode.connect(muteGain);
-        muteGain.connect(
-          audioContext.destination
-        );
-
-        streamRef.current = stream;
-        audioContextRef.current =
-          audioContext;
-        sourceNodeRef.current =
-          sourceNode;
-        processorNodeRef.current =
-          processorNode;
-        muteGainRef.current = muteGain;
-
-        recordingStartedAtRef.current =
-          performance.now();
-
-        currentChunkStartedAtRef.current =
-          0;
-
-        chunkTimerRef.current =
-          window.setInterval(() => {
-            void flushCurrentChunk();
-          }, CHUNK_DURATION_MS);
-
-        setIsRecording(true);
-      } catch (startError) {
-        const message =
-          getErrorMessage(startError);
-
-        console.error(
-          '[useCallRecorder] start failed:',
-          startError
-        );
-
-        setError(message);
-        setIsRecording(false);
-
-        await stopAudioResources();
-      }
-    }, [
-      flushCurrentChunk,
-      isRecording,
-      stopAudioResources,
-    ]);
-
-  const stopRecording =
-    useCallback(async () => {
-      if (!isRecording) {
-        return;
-      }
-
+      setIsRecording(true);
+    } catch (startError) {
+      const message = getErrorMessage(startError);
+      console.error('[useCallRecorder] start failed:', startError);
+      setError(message);
       setIsRecording(false);
+      await stopAudioResources();
+    }
+  }, [flushCurrentChunk, isRecording, isSending, stopAudioResources]);
 
-      /*
-       * 리소스를 종료하기 전에 마지막 10초 미만 청크를
-       * 먼저 WAV로 변환해 전송합니다.
-       */
+  const stopRecording = useCallback(async () => {
+    if (!isRecording) return;
+
+    const completedSessionId = sessionIdRef.current;
+    setIsRecording(false);
+
+    try {
       await flushCurrentChunk();
       await stopAudioResources();
-
-      /*
-       * 이미 큐에 들어간 청크 전송 완료를 기다립니다.
-       */
       await sendQueueRef.current;
-    }, [
-      flushCurrentChunk,
-      isRecording,
-      stopAudioResources,
-    ]);
 
-  const resetRecording =
-    useCallback(() => {
-      if (isRecording) {
-        return;
+      // 빈 녹음은 DB 세션 자체가 생성되지 않으므로 완료 요청을 생략합니다.
+      if (chunkIndexRef.current > 0) {
+        setIsSending(true);
+        await completeSession(completedSessionId);
       }
+    } catch (stopError) {
+      const message = getErrorMessage(stopError);
+      console.error('[useCallRecorder] stop failed:', stopError);
+      if (mountedRef.current) setError(message);
+    } finally {
+      if (mountedRef.current) setIsSending(false);
+    }
+  }, [completeSession, flushCurrentChunk, isRecording, stopAudioResources]);
 
-      setChunks([]);
-      setError(null);
+  const resetRecording = useCallback(() => {
+    if (isRecording || isSending) return;
 
-      chunkIndexRef.current = 0;
-      pcmBuffersRef.current = [];
-      currentChunkStartedAtRef.current =
-        0;
-    }, [isRecording]);
+    const nextSessionId = crypto.randomUUID();
+    sessionIdRef.current = nextSessionId;
+    setSessionId(nextSessionId);
+    setChunks([]);
+    setError(null);
+    chunkIndexRef.current = 0;
+    pcmBuffersRef.current = [];
+    currentChunkStartedAtRef.current = 0;
+  }, [isRecording, isSending]);
 
   useEffect(() => {
     mountedRef.current = true;
 
     return () => {
       mountedRef.current = false;
-
-      if (
-        chunkTimerRef.current !== null
-      ) {
-        window.clearInterval(
-          chunkTimerRef.current
-        );
+      if (chunkTimerRef.current !== null) {
+        window.clearInterval(chunkTimerRef.current);
       }
-
       processorNodeRef.current?.disconnect();
       sourceNodeRef.current?.disconnect();
       muteGainRef.current?.disconnect();
+      streamRef.current?.getTracks().forEach((track) => track.stop());
 
-      streamRef.current
-        ?.getTracks()
-        .forEach((track) =>
-          track.stop()
-        );
-
-      const audioContext =
-        audioContextRef.current;
-
-      if (
-        audioContext &&
-        audioContext.state !== 'closed'
-      ) {
+      const audioContext = audioContextRef.current;
+      if (audioContext && audioContext.state !== 'closed') {
         void audioContext.close();
       }
     };
@@ -632,9 +407,7 @@ function mergeFloat32Arrays(
   buffers: Float32Array[],
   totalLength: number
 ): Float32Array {
-  const merged =
-    new Float32Array(totalLength);
-
+  const merged = new Float32Array(totalLength);
   let offset = 0;
 
   for (const buffer of buffers) {
@@ -645,10 +418,6 @@ function mergeFloat32Arrays(
   return merged;
 }
 
-/**
- * 선형 보간을 이용해 원본 샘플레이트를
- * 16kHz로 변환합니다.
- */
 function resampleLinear(
   source: Float32Array,
   sourceSampleRate: number,
@@ -662,166 +431,65 @@ function resampleLinear(
     return new Float32Array();
   }
 
-  if (
-    sourceSampleRate ===
-    targetSampleRate
-  ) {
+  if (sourceSampleRate === targetSampleRate) {
     return new Float32Array(source);
   }
 
-  const sampleRateRatio =
-    sourceSampleRate /
-    targetSampleRate;
-
+  const sampleRateRatio = sourceSampleRate / targetSampleRate;
   const targetLength = Math.max(
     1,
-    Math.round(
-      source.length /
-        sampleRateRatio
-    )
+    Math.round(source.length / sampleRateRatio)
   );
+  const output = new Float32Array(targetLength);
 
-  const output =
-    new Float32Array(targetLength);
-
-  for (
-    let targetIndex = 0;
-    targetIndex < targetLength;
-    targetIndex += 1
-  ) {
-    const sourcePosition =
-      targetIndex *
-      sampleRateRatio;
-
-    const leftIndex =
-      Math.floor(sourcePosition);
-
-    const rightIndex = Math.min(
-      leftIndex + 1,
-      source.length - 1
-    );
-
-    const fraction =
-      sourcePosition - leftIndex;
-
-    const leftSample =
-      source[leftIndex] ?? 0;
-
-    const rightSample =
-      source[rightIndex] ?? leftSample;
+  for (let targetIndex = 0; targetIndex < targetLength; targetIndex += 1) {
+    const sourcePosition = targetIndex * sampleRateRatio;
+    const leftIndex = Math.floor(sourcePosition);
+    const rightIndex = Math.min(leftIndex + 1, source.length - 1);
+    const fraction = sourcePosition - leftIndex;
+    const leftSample = source[leftIndex] ?? 0;
+    const rightSample = source[rightIndex] ?? leftSample;
 
     output[targetIndex] =
-      leftSample +
-      (rightSample - leftSample) *
-        fraction;
+      leftSample + (rightSample - leftSample) * fraction;
   }
 
   return output;
 }
 
-/**
- * PCM Float32 데이터를
- * 16비트 모노 WAV ArrayBuffer로 변환합니다.
- */
 function encodeWav16BitMono(
   samples: Float32Array,
   sampleRate: number
 ): ArrayBuffer {
   const bytesPerSample = 2;
   const numberOfChannels = 1;
-
-  const dataLength =
-    samples.length *
-    bytesPerSample;
-
-  const buffer =
-    new ArrayBuffer(
-      44 + dataLength
-    );
-
-  const view =
-    new DataView(buffer);
+  const dataLength = samples.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(buffer);
 
   writeAscii(view, 0, 'RIFF');
-
-  view.setUint32(
-    4,
-    36 + dataLength,
-    true
-  );
-
+  view.setUint32(4, 36 + dataLength, true);
   writeAscii(view, 8, 'WAVE');
   writeAscii(view, 12, 'fmt ');
-
-  // PCM 포맷 청크 길이
   view.setUint32(16, 16, true);
-
-  // 오디오 포맷 1 = PCM
   view.setUint16(20, 1, true);
-
-  view.setUint16(
-    22,
-    numberOfChannels,
-    true
-  );
-
-  view.setUint32(
-    24,
-    sampleRate,
-    true
-  );
-
+  view.setUint16(22, numberOfChannels, true);
+  view.setUint32(24, sampleRate, true);
   view.setUint32(
     28,
-    sampleRate *
-      numberOfChannels *
-      bytesPerSample,
+    sampleRate * numberOfChannels * bytesPerSample,
     true
   );
-
-  view.setUint16(
-    32,
-    numberOfChannels *
-      bytesPerSample,
-    true
-  );
-
+  view.setUint16(32, numberOfChannels * bytesPerSample, true);
   view.setUint16(34, 16, true);
-
   writeAscii(view, 36, 'data');
-
-  view.setUint32(
-    40,
-    dataLength,
-    true
-  );
+  view.setUint32(40, dataLength, true);
 
   let byteOffset = 44;
-
-  for (
-    let index = 0;
-    index < samples.length;
-    index += 1
-  ) {
-    const sample = Math.max(
-      -1,
-      Math.min(
-        1,
-        samples[index] ?? 0
-      )
-    );
-
-    const pcmValue =
-      sample < 0
-        ? sample * 0x8000
-        : sample * 0x7fff;
-
-    view.setInt16(
-      byteOffset,
-      Math.round(pcmValue),
-      true
-    );
-
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[index] ?? 0));
+    const pcmValue = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+    view.setInt16(byteOffset, Math.round(pcmValue), true);
     byteOffset += 2;
   }
 
@@ -833,73 +501,39 @@ function writeAscii(
   offset: number,
   value: string
 ): void {
-  for (
-    let index = 0;
-    index < value.length;
-    index += 1
-  ) {
-    view.setUint8(
-      offset + index,
-      value.charCodeAt(index)
-    );
+  for (let index = 0; index < value.length; index += 1) {
+    view.setUint8(offset + index, value.charCodeAt(index));
   }
 }
 
-async function blobToBase64(
-  blob: Blob
-): Promise<string> {
-  const arrayBuffer =
-    await blob.arrayBuffer();
-
-  const bytes =
-    new Uint8Array(arrayBuffer);
-
+async function blobToBase64(blob: Blob): Promise<string> {
+  const arrayBuffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
   const blockSize = 0x8000;
-
   let binary = '';
 
-  for (
-    let offset = 0;
-    offset < bytes.length;
-    offset += blockSize
-  ) {
+  for (let offset = 0; offset < bytes.length; offset += blockSize) {
     const block = bytes.subarray(
       offset,
-      Math.min(
-        offset + blockSize,
-        bytes.length
-      )
+      Math.min(offset + blockSize, bytes.length)
     );
-
-    binary += String.fromCharCode(
-      ...block
-    );
+    binary += String.fromCharCode(...block);
   }
 
   return btoa(binary);
 }
 
-function getWebkitAudioContext():
-  | typeof AudioContext
-  | undefined {
+function getWebkitAudioContext(): typeof AudioContext | undefined {
   return (
     window as typeof window & {
-      webkitAudioContext?:
-        typeof AudioContext;
+      webkitAudioContext?: typeof AudioContext;
     }
   ).webkitAudioContext;
 }
 
-function getErrorMessage(
-  error: unknown
-): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  if (typeof error === 'string') {
-    return error;
-  }
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
 
   try {
     return JSON.stringify(error);
