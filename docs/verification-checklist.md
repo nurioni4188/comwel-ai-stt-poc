@@ -94,6 +94,36 @@
 - [x] v2 `confirmed_by = staff` 확인
 - [x] 기존 v1 이력 보존 확인
 
+## 생성형 AI 민원 요지 정제 — PR #7 / 2026-08-09
+
+- [x] `POST /api/stt-summary-refine` 구현
+- [x] Structured Output JSON 필드 `summary / requests / key_facts / needs_confirmation` 적용
+- [x] Vercel Development `OPENAI_API_KEY` 등록
+- [x] Vercel Development `OPENAI_MODEL` 등록
+- [x] PR #7 최신 브랜치 `npm run build` 성공
+- [x] PR #7 최신 브랜치 `npm run lint` — 0 warnings, 0 errors
+- [x] `vercel pull --yes --environment=development` 완료
+- [x] `vercel dev` 로컬 실행 확인
+- [x] DB migration `20260809_ai_summary_refine.sql` 적용
+- [x] RPC `save_ai_refined_draft` 생성 확인
+- [x] `drafts_source_type_check`에 `extractive / ai / staff` 허용 확인
+- [x] 새 세션에서 STT 정상 동작
+- [x] v1 `complaint_summary_extractive_v1` 생성
+- [x] AI 정제본 v2 `complaint_summary_ai_refined_v1` 생성
+- [x] v2 `source_type = ai`
+- [x] v2 `parent_draft_id`가 v1을 참조
+- [x] 담당자 수정본 v3 `complaint_summary_staff_v1` 생성
+- [x] v3 `parent_draft_id`가 v2를 참조
+- [x] 최종 버전 흐름 `v1 extractive → v2 ai → v3 staff` 확인
+- [x] v1 `superseded / is_current=false`
+- [x] v2 `superseded / is_current=false`
+- [x] v3 `confirmed / is_current=true`
+- [x] v3 `confirmed_at is not null`
+- [x] v3 `confirmed_by = staff`
+- [x] AI 정제본 자체는 직접 확정되지 않음
+- [x] 같은 세션에서 AI 정제 재실행 후 불필요한 v4 AI 버전이 생성되지 않음
+- [x] 자동 제출·자동 처분·자동 확정 없음 확인
+
 ## 기준선 이후 원칙
 
 - WAV STT 기준 태그는 `v0.1.0-stt-poc`입니다.
