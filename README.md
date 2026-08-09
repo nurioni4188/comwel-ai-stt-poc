@@ -22,7 +22,7 @@
 
 ## 환경변수
 
-`.env.example`을 참고해 Vercel Development 환경에 아래 값을 등록합니다.
+`.env.example`을 참고해 Vercel Development 및 Production 환경에 아래 값을 등록합니다.
 
 ```text
 SUPABASE_URL
@@ -66,6 +66,7 @@ vercel dev
 5. Supabase `transcript_chunks`의 `chunk_index`가 0부터 연속이고 중복되지 않아야 합니다.
 6. `audio_format`은 `audio/wav`로 저장되어야 합니다.
 7. 같은 청크가 재전송되면 `(session_id, chunk_index)` 기준으로 갱신되어 중복 행이 생기지 않아야 합니다.
+8. 녹음 종료 후 `call_sessions.status = completed`, `ended_at`이 기록되어야 합니다.
 
 검증 SQL 예시:
 
@@ -81,6 +82,22 @@ from stt_poc.transcript_chunks
 where session_id = '<검증할 UUID>'
 order by chunk_index;
 ```
+
+## Production 검증 기준선
+
+2026-08-09 기준 Production 배포와 실제 마이크 녹음을 완료했습니다.
+
+- 기준 main SHA: `ee6d206`
+- Production URL: `https://comwel-ai-stt-poc.vercel.app`
+- Production 환경변수 4종 적용 확인
+- 실제 녹음에서 10초 단위 WAV 청크 STT 결과 표시 확인
+- 검증 세션: `fcbc1819-f89b-4c52-94b3-fb6eab732531`
+- 해당 세션 `status = completed`, `ended_at` 기록 확인
+- `chunk_index` 0부터 연속 저장 확인
+- 검사 청크 `audio_format = audio/wav` 확인
+- Production 화면상 STT 처리 실패 없음
+
+이 기준선 이후의 기능 변경은 `main`에서 직접 수정하지 않고 별도 기능 브랜치에서 진행합니다.
 
 ## 현재 범위
 
