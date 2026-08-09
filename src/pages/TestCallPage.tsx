@@ -28,9 +28,6 @@ export default function TestCallPage() {
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [isSummarizing, setIsSummarizing] = useState(false);
 
-  // 새 녹음이 시작되면서 sessionId가 교체되면 이전 세션의 요지 상태를
-  // 반드시 비웁니다. 녹음 버튼 클릭 시 선제 초기화와 함께 이 effect를 두어
-  // 세션 전환 시 이전 요지가 새 세션 화면에 남는 회귀를 방지합니다.
   useEffect(() => {
     setSummaryDraft('');
     setSummaryError(null);
@@ -42,14 +39,13 @@ export default function TestCallPage() {
   const failedCount = chunks.filter(
     (chunk) => chunk.status === 'error'
   ).length;
+  const hasRecognizedText = cumulativeText.trim().length > 0;
 
   const handleRecordingClick = async () => {
     try {
       if (isRecording) {
         await stopRecording();
       } else {
-        // 새 녹음 요청 시 즉시 이전 요지 UI를 비웁니다.
-        // sessionId 변경 effect가 한 번 더 보장합니다.
         setSummaryDraft('');
         setSummaryError(null);
         await startRecording();
@@ -60,7 +56,15 @@ export default function TestCallPage() {
   };
 
   const handleSummaryDraft = async () => {
-    if (isRecording || isSending || isSummarizing || completedCount === 0) return;
+    if (
+      isRecording ||
+      isSending ||
+      isSummarizing ||
+      completedCount === 0 ||
+      !hasRecognizedText
+    ) {
+      return;
+    }
 
     setIsSummarizing(true);
     setSummaryError(null);
@@ -232,7 +236,8 @@ export default function TestCallPage() {
                 isRecording ||
                 isSending ||
                 isSummarizing ||
-                completedCount === 0
+                completedCount === 0 ||
+                !hasRecognizedText
               }
             >
               {isSummarizing ? '요지 생성 중…' : '민원 요지 초안 생성'}
