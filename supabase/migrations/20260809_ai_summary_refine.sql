@@ -98,7 +98,53 @@ begin
 end;
 $$;
 
+create or replace function stt_poc.confirm_current_draft(
+  p_session_id uuid,
+  p_actor text default null
+)
+returns stt_poc.drafts
+language plpgsql
+security definer
+set search_path = stt_poc, public
+as $$
+declare
+  v_current stt_poc.drafts;
+begin
+  select *
+  into v_current
+  from stt_poc.drafts
+  where session_id = p_session_id
+    and is_current = true
+  order by version_no desc
+  limit 1
+  for update;
+
+  if v_current.id is null then
+    raise exception 'current draft not found';
+  end if;
+
+  if v_current.source_type <> 'staff' then
+    raise exception 'only a staff-reviewed draft can be confirmed';
+  end if;
+
+  update stt_poc.drafts
+  set
+    status = 'confirmed',
+    confirmed_at = coalesce(confirmed_at, now()),
+    confirmed_by = coalesce(nullif(btrim(p_actor), ''), confirmed_by, 'staff'),
+    updated_at = now()
+  where id = v_current.id
+  returning * into v_current;
+
+  return v_current;
+end;
+$$;
+
 revoke all on function stt_poc.save_ai_refined_draft(uuid, text)
   from public, anon, authenticated;
+revoke all on function stt_poc.confirm_current_draft(uuid, text)
+  from public, anon, authenticated;
 grant execute on function stt_poc.save_ai_refined_draft(uuid, text)
+  to service_role;
+grant execute on function stt_poc.confirm_current_draft(uuid, text)
   to service_role;
