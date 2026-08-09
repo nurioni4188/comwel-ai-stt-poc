@@ -16,6 +16,12 @@ interface TranscriptChunkRow {
   transcript: string | null;
 }
 
+interface ExistingDraftRow {
+  id: string;
+  status: string;
+  is_current: boolean;
+}
+
 export default async function handler(
   req: VercelRequest,
   res: VercelResponse
@@ -99,7 +105,7 @@ export default async function handler(
 
     const { data: existingDraft, error: existingError } = await supabase
       .from('drafts')
-      .select('id')
+      .select('id,status,is_current')
       .eq('session_id', sessionId)
       .eq('draft_type', SUMMARY_DRAFT_TYPE)
       .order('updated_at', { ascending: false })
@@ -108,17 +114,40 @@ export default async function handler(
 
     if (existingError) throw existingError;
 
-    if (existingDraft) {
+    const existing = existingDraft as ExistingDraftRow | null;
+    if (existing?.status === 'confirmed') {
+      return res.status(409).json({
+        error: '확정본 보호',
+        detail: '이미 담당자 확정된 요지는 다시 생성할 수 없습니다.',
+      });
+    }
+
+    if (existing) {
       const { error: updateError } = await supabase
         .from('drafts')
         .update({ content: summary, updated_at: now })
-        .eq('id', existingDraft.id);
+        .eq('id', existing.id);
       if (updateError) throw updateError;
     } else {
+      const { data: latestDraft, error: latestError } = await supabase
+        .from('drafts')
+        .select('version_no,is_current')
+        .eq('session_id', sessionId)
+        .order('version_no', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (latestError) throw latestError;
+
+      const nextVersion = (latestDraft?.version_no ?? 0) + 1;
+      const hasCurrentDraft = Boolean(latestDraft?.is_current);
       const { error: insertError } = await supabase.from('drafts').insert({
         session_id: sessionId,
         draft_type: SUMMARY_DRAFT_TYPE,
         content: summary,
+        version_no: nextVersion,
+        source_type: 'extractive',
+        status: hasCurrentDraft ? 'superseded' : 'draft',
+        is_current: !hasCurrentDraft,
         updated_at: now,
       });
       if (insertError) throw insertError;
