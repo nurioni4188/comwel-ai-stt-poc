@@ -47,16 +47,17 @@
 
 ## 민원 요지 초안 — feat/stt-poc-next
 
-- [ ] 최신 브랜치 `npm run build` 통과
-- [ ] 최신 브랜치 `npm run lint` 0 warnings, 0 errors
-- [ ] 완료되지 않은 세션에서 `/api/stt-summary`가 요지 생성을 거부함
-- [ ] 완료된 세션에서 `/api/stt-summary`가 요지 초안을 반환함
-- [ ] 요지 초안이 STT 원문에 없는 사실·사건번호·결론을 새로 만들지 않음
-- [ ] `draft_type = 'complaint_summary_extractive_v1'`로 `stt_poc.drafts`에 저장됨
-- [ ] 같은 세션에서 재생성 시 최신 기존 초안이 갱신되고 불필요한 중복이 늘지 않음
-- [ ] 화면에서 전체 통화 인식문과 민원 요지 초안이 분리 표시됨
-- [ ] 요지 생성 중 버튼 중복 클릭이 차단됨
-- [ ] 새 녹음 시작/결과 초기화 시 이전 요지 초안이 화면에서 제거됨
+- [x] 최신 브랜치 `npm run build` 통과
+- [x] 최신 브랜치 `npm run lint` 0 warnings, 0 errors
+- [x] 완료되지 않은 세션에서 `/api/stt-summary`가 요지 생성을 거부함 — `status !== 'completed'`이면 409 반환
+- [x] 완료된 세션에서 `/api/stt-summary`가 요지 초안을 반환함
+- [x] 요지 초안이 STT 원문에 없는 사실·사건번호·결론을 새로 만들지 않음 — 원문 추출형 `extractive_v1`
+- [x] `draft_type = 'complaint_summary_extractive_v1'`로 `stt_poc.drafts`에 저장됨
+- [x] 같은 세션에서 재생성 시 최신 기존 초안이 갱신되고 불필요한 중복이 늘지 않음
+- [x] 화면에서 전체 통화 인식문과 민원 요지 초안이 분리 표시됨
+- [x] 요지 생성 중 버튼 중복 클릭이 차단됨 — `isSummarizing` 동안 disabled
+- [x] 새 녹음 시작/결과 초기화 시 이전 요지 초안이 화면에서 제거됨
+- [x] 빈 STT에서는 민원 요지 초안 생성 버튼이 비활성화됨
 
 ## 병합/기준선 조건
 
