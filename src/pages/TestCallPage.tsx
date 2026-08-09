@@ -11,6 +11,14 @@ interface SummaryApiResponse {
   detail?: string;
 }
 
+interface DraftMutationResponse {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+}
+
+type ReviewState = 'idle' | 'generated' | 'saved' | 'confirmed';
+
 export default function TestCallPage() {
   const {
     sessionId,
@@ -26,11 +34,14 @@ export default function TestCallPage() {
 
   const [summaryDraft, setSummaryDraft] = useState('');
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [reviewMessage, setReviewMessage] = useState<string | null>(null);
+  const [reviewState, setReviewState] = useState<ReviewState>('idle');
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
 
   useEffect(() => {
-    setSummaryDraft('');
-    setSummaryError(null);
+    resetDraftReviewState();
   }, [sessionId]);
 
   const completedCount = chunks.filter(
@@ -40,14 +51,16 @@ export default function TestCallPage() {
     (chunk) => chunk.status === 'error'
   ).length;
   const hasRecognizedText = cumulativeText.trim().length > 0;
+  const hasDraftText = summaryDraft.trim().length > 0;
+  const isReviewBusy = isSummarizing || isSaving || isConfirming;
+  const isConfirmed = reviewState === 'confirmed';
 
   const handleRecordingClick = async () => {
     try {
       if (isRecording) {
         await stopRecording();
       } else {
-        setSummaryDraft('');
-        setSummaryError(null);
+        resetDraftReviewState();
         await startRecording();
       }
     } catch (clickError) {
@@ -59,7 +72,7 @@ export default function TestCallPage() {
     if (
       isRecording ||
       isSending ||
-      isSummarizing ||
+      isReviewBusy ||
       completedCount === 0 ||
       !hasRecognizedText
     ) {
@@ -68,6 +81,7 @@ export default function TestCallPage() {
 
     setIsSummarizing(true);
     setSummaryError(null);
+    setReviewMessage(null);
 
     try {
       const response = await fetch('/api/stt-summary', {
@@ -83,8 +97,12 @@ export default function TestCallPage() {
         );
       }
 
-      setSummaryDraft(
-        typeof result.summary === 'string' ? result.summary.trim() : ''
+      const nextSummary =
+        typeof result.summary === 'string' ? result.summary.trim() : '';
+      setSummaryDraft(nextSummary);
+      setReviewState(nextSummary ? 'generated' : 'idle');
+      setReviewMessage(
+        nextSummary ? '원문 기반 요지 초안이 생성되었습니다. 담당자가 수정할 수 있습니다.' : null
       );
     } catch (summaryRequestError) {
       const message = getErrorMessage(summaryRequestError);
@@ -95,12 +113,87 @@ export default function TestCallPage() {
     }
   };
 
-  const handleReset = () => {
-    if (isSending || isSummarizing) return;
-    setSummaryDraft('');
+  const handleSaveDraft = async () => {
+    if (!hasDraftText || isReviewBusy || isConfirmed) return;
+
+    setIsSaving(true);
     setSummaryError(null);
+    setReviewMessage(null);
+
+    try {
+      const response = await fetch('/api/stt-draft-save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, content: summaryDraft }),
+      });
+      const result = (await response.json()) as DraftMutationResponse;
+      if (!response.ok) {
+        throw new Error(
+          result.detail || result.error || `수정본 저장 실패: ${response.status}`
+        );
+      }
+
+      setReviewState('saved');
+      setReviewMessage('담당자 수정본을 새 버전으로 저장했습니다. 이전 버전은 보존됩니다.');
+    } catch (saveError) {
+      const message = getErrorMessage(saveError);
+      console.error('[TestCallPage] draft save failed:', saveError);
+      setSummaryError(message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleConfirmDraft = async () => {
+    if (!hasDraftText || isReviewBusy || isConfirmed) return;
+
+    setIsConfirming(true);
+    setSummaryError(null);
+    setReviewMessage(null);
+
+    try {
+      const response = await fetch('/api/stt-draft-confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+      });
+      const result = (await response.json()) as DraftMutationResponse;
+      if (!response.ok) {
+        throw new Error(
+          result.detail || result.error || `확정 처리 실패: ${response.status}`
+        );
+      }
+
+      setReviewState('confirmed');
+      setReviewMessage('담당자 확정본으로 기록했습니다. 자동 제출·자동 처분은 수행하지 않습니다.');
+    } catch (confirmError) {
+      const message = getErrorMessage(confirmError);
+      console.error('[TestCallPage] draft confirm failed:', confirmError);
+      setSummaryError(message);
+    } finally {
+      setIsConfirming(false);
+    }
+  };
+
+  const handleDraftChange = (value: string) => {
+    if (isConfirmed) return;
+    setSummaryDraft(value);
+    setReviewState(value.trim() ? 'generated' : 'idle');
+    setReviewMessage(null);
+  };
+
+  const handleReset = () => {
+    if (isSending || isReviewBusy) return;
+    resetDraftReviewState();
     resetRecording();
   };
+
+  function resetDraftReviewState() {
+    setSummaryDraft('');
+    setSummaryError(null);
+    setReviewMessage(null);
+    setReviewState('idle');
+  }
 
   return (
     <main className="stt-page">
@@ -235,28 +328,71 @@ export default function TestCallPage() {
               disabled={
                 isRecording ||
                 isSending ||
-                isSummarizing ||
+                isReviewBusy ||
                 completedCount === 0 ||
-                !hasRecognizedText
+                !hasRecognizedText ||
+                isConfirmed
               }
             >
               {isSummarizing ? '요지 생성 중…' : '민원 요지 초안 생성'}
             </button>
             <p className="summary-note">
-              현재 단계는 생성형 AI가 아니라 STT 원문에서 요청·문의 관련 문장을 추출해
-              drafts에 저장하는 안전한 1차 흐름입니다.
+              원문 기반 1차 초안을 만든 뒤 담당자가 직접 수정·저장·확정합니다.
+              확정해도 자동 제출·자동 처분은 수행하지 않습니다.
             </p>
           </div>
 
           {summaryError && (
             <div className="error-message" role="alert">
-              <strong>요지 생성 오류</strong>
+              <strong>요지 처리 오류</strong>
               <span>{summaryError}</span>
             </div>
           )}
 
-          <div className="summary-result" aria-live="polite">
-            {summaryDraft || '(녹음 종료 후 요지 초안을 생성할 수 있습니다.)'}
+          {reviewMessage && (
+            <div className="review-message" role="status">
+              {reviewMessage}
+            </div>
+          )}
+
+          <label className="draft-editor-label" htmlFor="draft-editor">
+            담당자 수정 영역
+          </label>
+          <textarea
+            id="draft-editor"
+            className="draft-editor"
+            value={summaryDraft}
+            onChange={(event) => handleDraftChange(event.target.value)}
+            placeholder="녹음 종료 후 민원 요지 초안을 생성하면 여기에서 수정할 수 있습니다."
+            disabled={!hasDraftText && reviewState === 'idle' ? false : isConfirmed}
+            readOnly={isConfirmed}
+            maxLength={4000}
+          />
+
+          <div className="draft-review-actions">
+            <button
+              type="button"
+              className="secondary-action-button"
+              onClick={() => void handleSaveDraft()}
+              disabled={!hasDraftText || isReviewBusy || isConfirmed}
+            >
+              {isSaving ? '수정본 저장 중…' : '수정본 저장'}
+            </button>
+            <button
+              type="button"
+              className="confirm-action-button"
+              onClick={() => void handleConfirmDraft()}
+              disabled={!hasDraftText || isReviewBusy || isConfirmed}
+            >
+              {isConfirming
+                ? '확정 처리 중…'
+                : isConfirmed
+                  ? '담당자 확정 완료'
+                  : '담당자 확정'}
+            </button>
+            <span className={`review-state-badge ${reviewState}`}>
+              {formatReviewState(reviewState)}
+            </span>
           </div>
         </section>
 
@@ -266,7 +402,7 @@ export default function TestCallPage() {
               type="button"
               className="reset-button"
               onClick={handleReset}
-              disabled={isSending || isSummarizing}
+              disabled={isSending || isReviewBusy}
             >
               결과 초기화
             </button>
@@ -275,6 +411,13 @@ export default function TestCallPage() {
       </section>
     </main>
   );
+}
+
+function formatReviewState(state: ReviewState): string {
+  if (state === 'generated') return '초안 생성';
+  if (state === 'saved') return '수정본 저장';
+  if (state === 'confirmed') return '확정';
+  return '대기';
 }
 
 function formatSeconds(milliseconds: number): string {
