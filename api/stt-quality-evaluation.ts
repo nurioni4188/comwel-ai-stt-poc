@@ -55,7 +55,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const sessionId = body.sessionId?.trim() ?? '';
     const overallRating = body.overallRating?.trim() ?? '';
     const reviewerNote = body.reviewerNote?.trim() ?? '';
-    const actor = body.actor?.trim() || 'staff';
+    const actor = 'staff';
 
     if (!UUID_PATTERN.test(sessionId)) {
       return res.status(400).json({ error: 'sessionId는 올바른 UUID여야 합니다.' });
