@@ -66,10 +66,12 @@ export function normalizeTwilioMessage(message) {
 
   if (event === 'start') {
     const start = message.start || {};
+    const streamId = String(start.streamSid || message.streamSid || '');
     return {
       kind: 'call.started',
-      callId: String(start.callSid || message.streamSid || ''),
-      streamId: String(start.streamSid || message.streamSid || ''),
+      callId: streamId,
+      streamId,
+      providerCallId: String(start.callSid || ''),
       sequence: Number(message.sequenceNumber || 1),
       providerAudio: TWILIO_AUDIO,
     };
@@ -78,10 +80,11 @@ export function normalizeTwilioMessage(message) {
   if (event === 'media') {
     const payload = String(message.media?.payload || '');
     if (!payload) throw new Error('Twilio media payload is required');
+    const streamId = String(message.streamSid || '');
     return {
       kind: 'audio.inbound',
-      callId: String(message.streamSid || ''),
-      streamId: String(message.streamSid || ''),
+      callId: streamId,
+      streamId,
       sequence: Number(message.sequenceNumber || 0),
       providerPayloadBase64: payload,
       pcm16k: mulaw8kToPcm16k(payload),
@@ -89,30 +92,34 @@ export function normalizeTwilioMessage(message) {
   }
 
   if (event === 'dtmf') {
+    const streamId = String(message.streamSid || '');
     return {
       kind: 'dtmf.received',
-      callId: String(message.streamSid || ''),
-      streamId: String(message.streamSid || ''),
+      callId: streamId,
+      streamId,
       sequence: Number(message.sequenceNumber || 0),
       digit: String(message.dtmf?.digit || ''),
     };
   }
 
   if (event === 'mark') {
+    const streamId = String(message.streamSid || '');
     return {
       kind: 'provider.mark',
-      callId: String(message.streamSid || ''),
-      streamId: String(message.streamSid || ''),
+      callId: streamId,
+      streamId,
       sequence: Number(message.sequenceNumber || 0),
       name: String(message.mark?.name || ''),
     };
   }
 
   if (event === 'stop') {
+    const streamId = String(message.streamSid || '');
     return {
       kind: 'call.stopped',
-      callId: String(message.stop?.callSid || message.streamSid || ''),
-      streamId: String(message.streamSid || ''),
+      callId: streamId,
+      streamId,
+      providerCallId: String(message.stop?.callSid || ''),
       sequence: Number(message.sequenceNumber || 0),
       reason: 'provider_stop',
     };
@@ -122,11 +129,7 @@ export function normalizeTwilioMessage(message) {
 }
 
 export function twilioMediaMessage(streamSid, mulawBuffer) {
-  return JSON.stringify({
-    event: 'media',
-    streamSid,
-    media: { payload: mulawBuffer.toString('base64') },
-  });
+  return JSON.stringify({ event: 'media', streamSid, media: { payload: mulawBuffer.toString('base64') } });
 }
 
 export function twilioMarkMessage(streamSid, name) {
