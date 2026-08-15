@@ -19,7 +19,9 @@ export default function RagAnswerPage(){
       const response=await fetch('/api/stt-rag-answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:trimmed,history})});
       const body=await response.json() as RagResponse;
       if(!response.ok)throw new Error([body.error,body.detail].filter(Boolean).join(' · ')||'답변 생성 실패');
-      setTurns(prev=>[...prev,{role:'user',content:trimmed},{role:'assistant',content:body.answer??'',generated:body.generated,evidence:body.evidence??[],confidence:body.confidence,needsHumanReview:body.needsHumanReview}].slice(-12));
+      const userTurn:Turn={role:'user',content:trimmed};
+      const assistantTurn:Turn={role:'assistant',content:body.answer??'',generated:body.generated,evidence:body.evidence??[],confidence:body.confidence,needsHumanReview:body.needsHumanReview};
+      setTurns(prev=>[...prev,userTurn,assistantTurn].slice(-12));
       setQuestion('');
     }catch(e){setError(e instanceof Error?e.message:String(e));}
     finally{setLoading(false);}
