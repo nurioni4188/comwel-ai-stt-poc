@@ -138,11 +138,37 @@
 - [x] v2 `parent_draft_id` 존재 및 v1 참조
 - [x] v3 `parent_draft_id` 존재 및 v2 참조
 - [x] v3 `confirmed_at is not null`
-- [x] v3 `confirmed_by = staff`
+- [x] v3 `confirmed_by = staff` 확인
 - [x] AI 정제본 직접 확정 방지 유지
 - [x] 자동 제출·자동 처분·자동 확정 없음 유지
 - [x] Production 최종 회귀검증 완료
 - [x] v0.4.0 기준선 태그명 `v0.4.0-stt-ai-summary-refine` 확정
+
+## CLOVA async callback 안정화 — v0.4.1 / 2026-08-15
+
+- [x] `stt-submit` version 8 ACTIVE
+- [x] `stt-clova-callback` version 7 ACTIVE
+- [x] `stt-submit verify_jwt=true`
+- [x] `stt-clova-callback verify_jwt=false`
+- [x] 검증 job `bb2d4784-9ab4-491f-b040-2808067cb14f`
+- [x] 검증 session `5497ba60-7fbb-4b4a-a4af-fdb28211c993`
+- [x] `pending → processing → completed`
+- [x] `progress = 100`
+- [x] callback result `SUCCEEDED`
+- [x] `error_code is null`, `error_message is null`
+- [x] `stt_transcripts` 저장 및 confidence `0.9792`
+- [x] `stt_segments` 1건 저장
+- [x] `stt_poc.transcript_chunks` 1건 저장
+- [x] `clova_callback_completed` 기록
+- [x] `bridge_warning = null`
+- [x] callback URL의 `?token=` 고정 secret 제거
+- [x] callback provider token과 `stt_jobs.provider_job_id` 일치 검증
+- [x] event/transcript metadata에 provider token 원문 미저장
+- [x] Edge Function 로그에 callback query secret 미노출
+- [x] `public.rls_auto_enable()` PUBLIC/anon/authenticated EXECUTE 권한 회수
+- [x] Security Advisor의 SECURITY DEFINER 실행 권한 WARN 제거
+- [ ] Supabase Auth Leaked Password Protection 활성화
+- [x] 예정 기준 태그명 `v0.4.1-stt-clova-async-callback`
 
 ## 기준선 이후 원칙
 
@@ -150,7 +176,9 @@
 - STT + 민원 요지 기준 태그는 `v0.2.0-stt-summary`입니다.
 - 담당자 수정·확정 기준 태그는 `v0.3.0-stt-draft-review`입니다.
 - 생성형 AI 민원 요지 정제 기준 태그는 `v0.4.0-stt-ai-summary-refine`입니다.
+- CLOVA async callback 안정화 기준 태그는 `v0.4.1-stt-clova-async-callback`로 확정 예정입니다.
 - 기준선 이후 기능 변경은 `main`에 직접 반영하지 않고 별도 기능 브랜치에서 진행합니다.
-- 비밀값은 Vercel 환경변수에서만 관리하고 Git 저장소에는 커밋하지 않습니다.
+- 비밀값은 서버 환경변수/Secret에서만 관리하고 Git 저장소에는 커밋하지 않습니다.
+- callback URL에 장기 고정 secret을 query string으로 넣지 않습니다.
 - AI 정제본은 자동 확정하지 않으며 담당자 검토·수정본만 확정할 수 있습니다.
 - 담당자 확정은 자동 제출·자동 처분을 의미하지 않습니다.
