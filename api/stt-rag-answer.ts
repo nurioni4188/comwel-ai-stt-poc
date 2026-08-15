@@ -56,6 +56,19 @@ function fuzzyContains(haystack:string,token:string){
   }
   return false;
 }
+const SEMANTIC_CONCEPTS={
+  privacy:['개인정보','주민등록번호','주민등록 번호','민원 원문','실제 민원','민원업무'],
+  input:['입력','넣어','넣으면','기재','작성'],
+} as const;
+function hasConcept(text:string,terms:readonly string[]){
+  const normalized=text.toLowerCase().replace(/\s+/g,' ');
+  return terms.some(term=>normalized.includes(term));
+}
+function semanticConceptBonus(question:string,content:string){
+  const privacyMatch=hasConcept(question,SEMANTIC_CONCEPTS.privacy)&&hasConcept(content,SEMANTIC_CONCEPTS.privacy);
+  const inputMatch=hasConcept(question,SEMANTIC_CONCEPTS.input)&&hasConcept(content,SEMANTIC_CONCEPTS.input);
+  return privacyMatch&&inputMatch?6:0;
+}
 function scoreEvidence(question:string,tokens:string[],doc:Doc,chunk:Chunk){
   const content=chunk.content.toLowerCase(); const title=doc.title.toLowerCase(); const keywords=(chunk.keywords??[]).map(k=>k.toLowerCase()); let score=0;
   for(const token of tokens){
@@ -64,6 +77,7 @@ function scoreEvidence(question:string,tokens:string[],doc:Doc,chunk:Chunk){
     if(keywords.some(k=>k===token||k.includes(token)||token.includes(k)||fuzzyContains(k,token)))score+=4;
   }
   if(question.length>=4 && content.includes(question.toLowerCase()))score+=8;
+  score+=semanticConceptBonus(question,content);
   return score;
 }
 function normalizeHistory(raw:unknown):HistoryTurn[]{
