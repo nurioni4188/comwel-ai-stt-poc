@@ -34,11 +34,50 @@ type Doc = { id:string;title:string;source_label:string;source_url:string|null;d
 type Chunk = { id:string;document_id:string;chunk_no:number;content:string;keywords:string[]|null };
 type Evidence = { chunkId:string;documentId:string;title:string;sourceLabel:string;sourceUrl:string|null;domain:string;excerpt:string;score:number;approvedAt:string|null;isTestFixture:boolean };
 
-function normalizeTokens(value:string){ return [...new Set(value.toLowerCase().match(/[가-힣a-z0-9]{2,}/g) ?? [])].slice(0,60); }
+const KOREAN_SUFFIXES=['에서는','으로는','에게는','이라는','이라고','이라면','에서도','으로','에서','에게','한테','처럼','보다','까지','부터','하고','하며','해서','하면','해도','하지','하는','되어','되는','되나요','인가요','입니까','습니다','입니다','나요','까요','거나','는데','지만','으나','라는','라고','이라','와','과','을','를','이','가','은','는','에','의','도','만'];
+function stemKoreanToken(token:string){
+  if(!/[가-힣]/.test(token)||token.length<3)return token;
+  for(const suffix of KOREAN_SUFFIXES){
+    if(token.endsWith(suffix)&&token.length-suffix.length>=2)return token.slice(0,-suffix.length);
+  }
+  return token;
+}
+function normalizeTokens(value:string){
+  const raw=value.toLowerCase().match(/[가-힣a-z0-9]{2,}/g) ?? [];
+  const expanded=raw.flatMap(token=>{const stem=stemKoreanToken(token);return stem!==token?[token,stem]:[token];});
+  return [...new Set(expanded)].slice(0,90);
+}
+function fuzzyContains(haystack:string,token:string){
+  if(token.length<2)return false;
+  if(haystack.includes(token))return true;
+  if(/[가-힣]/.test(token)&&token.length>=3){
+    const stem=stemKoreanToken(token);
+    if(stem.length>=2&&haystack.includes(stem))return true;
+  }
+  return false;
+}
+const SEMANTIC_CONCEPTS={
+  privacy:['개인정보','주민등록번호','주민등록 번호','민원 원문','실제 민원','민원업무'],
+  input:['입력','넣어','넣으면','기재','작성'],
+} as const;
+function hasConcept(text:string,terms:readonly string[]){
+  const normalized=text.toLowerCase().replace(/\s+/g,' ');
+  return terms.some(term=>normalized.includes(term));
+}
+function semanticConceptBonus(question:string,content:string){
+  const privacyMatch=hasConcept(question,SEMANTIC_CONCEPTS.privacy)&&hasConcept(content,SEMANTIC_CONCEPTS.privacy);
+  const inputMatch=hasConcept(question,SEMANTIC_CONCEPTS.input)&&hasConcept(content,SEMANTIC_CONCEPTS.input);
+  return privacyMatch&&inputMatch?6:0;
+}
 function scoreEvidence(question:string,tokens:string[],doc:Doc,chunk:Chunk){
   const content=chunk.content.toLowerCase(); const title=doc.title.toLowerCase(); const keywords=(chunk.keywords??[]).map(k=>k.toLowerCase()); let score=0;
-  for(const token of tokens){ if(title.includes(token))score+=3; if(content.includes(token))score+=2; if(keywords.some(k=>k===token||k.includes(token)||token.includes(k)))score+=4; }
+  for(const token of tokens){
+    if(fuzzyContains(title,token))score+=3;
+    if(fuzzyContains(content,token))score+=2;
+    if(keywords.some(k=>k===token||k.includes(token)||token.includes(k)||fuzzyContains(k,token)))score+=4;
+  }
   if(question.length>=4 && content.includes(question.toLowerCase()))score+=8;
+  score+=semanticConceptBonus(question,content);
   return score;
 }
 function normalizeHistory(raw:unknown):HistoryTurn[]{
@@ -79,10 +118,6 @@ export default async function handler(req:VercelRequest,res:VercelResponse){
     const {data:chunksData,error:chunksError}=await db.from('knowledge_chunks').select('id,document_id,chunk_no,content,keywords').in('document_id',docIds).limit(500); if(chunksError)throw chunksError;
     const chunks=(chunksData??[]) as Chunk[]; const docMap=new Map(docs.map(d=>[d.id,d]));
 
-    // Retrieval safety rule:
-    // - explicit new-topic questions use only the current question;
-    // - clearly anaphoric follow-ups may use exactly one previous user turn only to clarify the search query.
-    // The previous turn is never treated as evidence; only approved chunks are evidence.
     const retrieval=buildRetrievalQuestion(question,history);
     const tokens=normalizeTokens(retrieval.text);
     const ranked=chunks.map(chunk=>{const doc=docMap.get(chunk.document_id)!;return{chunk,doc,score:scoreEvidence(retrieval.text,tokens,doc,chunk)}}).filter(row=>row.score>0).sort((a,b)=>b.score-a.score).slice(0,MAX_EVIDENCE);
