@@ -71,16 +71,20 @@ export default async function handler(req:VercelRequest,res:VercelResponse){
 
     const {data:chunksData,error:chunksError}=await db.from('knowledge_chunks').select('id,document_id,chunk_no,content,keywords').in('document_id',docIds).limit(500); if(chunksError)throw chunksError;
     const chunks=(chunksData??[]) as Chunk[]; const docMap=new Map(docs.map(d=>[d.id,d]));
-    const retrievalContext=[...history.filter(h=>h.role==='user').map(h=>h.content),question].slice(-4).join(' '); const tokens=normalizeTokens(retrievalContext);
-    const ranked=chunks.map(chunk=>{const doc=docMap.get(chunk.document_id)!;return{chunk,doc,score:scoreEvidence(retrievalContext,tokens,doc,chunk)}}).filter(row=>row.score>0).sort((a,b)=>b.score-a.score).slice(0,MAX_EVIDENCE);
-    if(!ranked.length||ranked[0].score<MIN_SCORE){ await db.from('rag_answer_runs').insert({question_hash:questionHash,evidence_chunk_ids:ranked.map(r=>r.chunk.id),evidence_count:ranked.length,answer_generated:false,fallback_reason:'insufficient_evidence',model_name:model}); return res.status(200).json({ok:true,generated:false,answer:'현재 대화맥락과 충분히 부합하는 승인 근거를 찾지 못해 자동 답변을 생성하지 않았습니다. 담당자 확인이 필요합니다.',evidence:ranked.map(toEvidence),needsHumanReview:true,reason:'insufficient_evidence',contextTurns:history.length}); }
+
+    // Retrieval isolation rule: evidence retrieval MUST use only the current question.
+    // Previous turns are context for answer wording only and must never expand the evidence candidate set.
+    const retrievalQuestion=question;
+    const tokens=normalizeTokens(retrievalQuestion);
+    const ranked=chunks.map(chunk=>{const doc=docMap.get(chunk.document_id)!;return{chunk,doc,score:scoreEvidence(retrievalQuestion,tokens,doc,chunk)}}).filter(row=>row.score>0).sort((a,b)=>b.score-a.score).slice(0,MAX_EVIDENCE);
+    if(!ranked.length||ranked[0].score<MIN_SCORE){ await db.from('rag_answer_runs').insert({question_hash:questionHash,evidence_chunk_ids:ranked.map(r=>r.chunk.id),evidence_count:ranked.length,answer_generated:false,fallback_reason:'insufficient_evidence',model_name:model}); return res.status(200).json({ok:true,generated:false,answer:'현재 질문과 충분히 부합하는 승인 근거를 찾지 못해 자동 답변을 생성하지 않았습니다. 담당자 확인이 필요합니다.',evidence:ranked.map(toEvidence),needsHumanReview:true,reason:'insufficient_evidence',contextTurns:history.length}); }
 
     const evidence=ranked.map(toEvidence); const evidenceText=ranked.map((r,i)=>`[근거 ${i+1}]\n제목: ${r.doc.title}\n출처: ${r.doc.source_label}\n내용: ${r.chunk.content}`).join('\n\n');
     const conversationText=history.length?history.map(h=>`${h.role==='user'?'민원인':'AI'}: ${h.content}`).join('\n'):'(이전 대화 없음)';
     const response=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},body:JSON.stringify({
       model,store:false,
-      instructions:['당신은 근로복지공단 내부직원용 전화상담 PoC의 다회차 근거 기반 답변 도구입니다.','이전 대화는 문맥 이해에만 사용하고 사실 근거로 사용하지 마세요.','반드시 제공된 승인 근거 안에서만 답변하세요. 근거에 없는 사실, 법적 판단, 지급·인정 결과를 만들지 마세요.','개별 사건의 처분 결과를 확정하지 말고 필요한 경우 담당자 확인이 필요하다고 명시하세요.','답변은 한국어로 짧고 전화상담에서 읽기 쉬운 문장으로 작성하세요.','근거가 질문을 완전히 해결하지 못하면 needs_human_review=true로 하세요.'].join('\n'),
-      input:[{role:'user',content:[{type:'input_text',text:`[이전 대화]\n${conversationText}\n\n[현재 질문]\n${question}\n\n[승인 근거]\n${evidenceText}`}]}],
+      instructions:['당신은 근로복지공단 내부직원용 전화상담 PoC의 다회차 근거 기반 답변 도구입니다.','이전 대화는 문맥 이해와 대명사·생략 표현 해석에만 사용하고 사실 근거나 검색 근거로 사용하지 마세요.','반드시 제공된 승인 근거 안에서만 답변하세요. 근거에 없는 사실, 법적 판단, 지급·인정 결과를 만들지 마세요.','현재 질문과 승인 근거의 주제가 다르면 답변을 확장하지 말고 담당자 확인이 필요하다고 명시하세요.','개별 사건의 처분 결과를 확정하지 말고 필요한 경우 담당자 확인이 필요하다고 명시하세요.','답변은 한국어로 짧고 전화상담에서 읽기 쉬운 문장으로 작성하세요.','근거가 질문을 완전히 해결하지 못하면 needs_human_review=true로 하세요.'].join('\n'),
+      input:[{role:'user',content:[{type:'input_text',text:`[이전 대화 - 문맥 전용]\n${conversationText}\n\n[현재 질문]\n${question}\n\n[현재 질문으로만 검색된 승인 근거]\n${evidenceText}`}]}],
       text:{format:{type:'json_schema',name:'approved_evidence_multiturn_answer',strict:true,schema:ANSWER_SCHEMA}},
     })});
     const payload=await response.json() as OpenAIResponse; if(!response.ok)throw new Error(payload.error?.message||`OpenAI Responses API 오류: ${response.status}`);
