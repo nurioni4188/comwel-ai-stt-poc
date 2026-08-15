@@ -21,7 +21,7 @@ const ANSWER_SCHEMA = {
   type:'object', additionalProperties:false,
   required:['answer','confidence','needs_human_review'],
   properties:{
-    answer:{type:'string',minLength:1,maxLength:4000},
+    answer:{type:'string',minLength:1,maxLength:2000},
     confidence:{type:'number',minimum:0,maximum:1},
     needs_human_review:{type:'boolean'},
   },
@@ -78,11 +78,6 @@ export default async function handler(req:VercelRequest,res:VercelResponse){
 
     const {data:chunksData,error:chunksError}=await db.from('knowledge_chunks').select('id,document_id,chunk_no,content,keywords').in('document_id',docIds).limit(500); if(chunksError)throw chunksError;
     const chunks=(chunksData??[]) as Chunk[]; const docMap=new Map(docs.map(d=>[d.id,d]));
-
-    // Retrieval safety rule:
-    // - explicit new-topic questions use only the current question;
-    // - clearly anaphoric follow-ups may use exactly one previous user turn only to clarify the search query.
-    // The previous turn is never treated as evidence; only approved chunks are evidence.
     const retrieval=buildRetrievalQuestion(question,history);
     const tokens=normalizeTokens(retrieval.text);
     const ranked=chunks.map(chunk=>{const doc=docMap.get(chunk.document_id)!;return{chunk,doc,score:scoreEvidence(retrieval.text,tokens,doc,chunk)}}).filter(row=>row.score>0).sort((a,b)=>b.score-a.score).slice(0,MAX_EVIDENCE);
@@ -98,10 +93,14 @@ export default async function handler(req:VercelRequest,res:VercelResponse){
     })});
     const payload=await response.json() as OpenAIResponse; if(!response.ok)throw new Error(payload.error?.message||`OpenAI Responses API 오류: ${response.status}`);
     let output=''; for(const item of payload.output??[])for(const part of item.content??[]){if(part.type==='refusal'&&part.refusal)throw new Error(`AI 응답 거절: ${part.refusal}`);if(part.type==='output_text'&&part.text)output=part.text;}
-    if(!output)throw new Error('AI 답변 결과가 비어 있습니다.'); const parsed=JSON.parse(output) as AnswerOutput; const confidence=Number(parsed.confidence); if(!Number.isFinite(confidence)||confidence<0||confidence>1)throw new Error('AI 답변 신뢰도 값이 유효하지 않습니다.');
+    if(!output)throw new Error('AI 답변 결과가 비어 있습니다.');
+    const parsed=JSON.parse(output) as AnswerOutput; const confidence=Number(parsed.confidence); if(!Number.isFinite(confidence)||confidence<0||confidence>1)throw new Error('AI 답변 신뢰도 값이 유효하지 않습니다.');
+    const answer=String(parsed.answer).trim().slice(0,2000);
     const needsHumanReview=Boolean(parsed.needs_human_review||confidence<0.75);
-    await db.from('rag_answer_runs').insert({question_hash:questionHash,evidence_chunk_ids:evidence.map(e=>e.chunkId),evidence_count:evidence.length,answer_generated:true,model_name:model});
-    return res.status(200).json({ok:true,generated:true,answer:String(parsed.answer).trim(),confidence,evidence,needsHumanReview,mode:allowInternal?'approved_all':'approved_fixture_only',contextTurns:history.length,retrievalContextUsed:retrieval.usedContext});
+    const answerHash=createHash('sha256').update(answer,'utf8').digest('hex');
+    const {data:run,error:runError}=await db.from('rag_answer_runs').insert({question_hash:questionHash,evidence_chunk_ids:evidence.map(e=>e.chunkId),evidence_count:evidence.length,answer_generated:true,answer_hash:answerHash,model_name:model}).select('id').single();
+    if(runError) throw runError;
+    return res.status(200).json({ok:true,generated:true,answer,ragRunId:run.id,confidence,evidence,needsHumanReview,mode:allowInternal?'approved_all':'approved_fixture_only',contextTurns:history.length,retrievalContextUsed:retrieval.usedContext});
   }catch(error){console.error('[stt-rag-answer] failed:',error);return res.status(500).json({error:'근거 기반 AI 답변 생성 실패',...(process.env.VERCEL_ENV!=='production'?{detail:error instanceof Error?error.message:String(error)}:{})});}
 }
 function toEvidence(row:{chunk:Chunk;doc:Doc;score:number}):Evidence{return{chunkId:row.chunk.id,documentId:row.doc.id,title:row.doc.title,sourceLabel:row.doc.source_label,sourceUrl:row.doc.source_url,domain:row.doc.domain,excerpt:row.chunk.content.slice(0,700),score:row.score,approvedAt:row.doc.approved_at,isTestFixture:row.doc.is_test_fixture};}
