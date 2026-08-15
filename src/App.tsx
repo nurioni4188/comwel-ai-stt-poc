@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import TestCallPage from './pages/TestCallPage';
 import QualityDashboardPage from './pages/QualityDashboardPage';
+import RagAnswerPage from './pages/RagAnswerPage';
 
 function App() {
-  const [view, setView] = useState<'stt' | 'dashboard'>('stt');
+  const [view, setView] = useState<'stt' | 'dashboard' | 'rag'>('stt');
 
   return (
     <>
@@ -14,8 +15,11 @@ function App() {
         <button type="button" className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>
           품질 대시보드
         </button>
+        <button type="button" className={view === 'rag' ? 'active' : ''} onClick={() => setView('rag')}>
+          승인근거 AI 답변
+        </button>
       </nav>
-      {view === 'stt' ? <TestCallPage /> : <QualityDashboardPage />}
+      {view === 'stt' ? <TestCallPage /> : view === 'dashboard' ? <QualityDashboardPage /> : <RagAnswerPage />}
     </>
   );
 }
