@@ -8,7 +8,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const supabaseUrl = process.env.SUPABASE_URL?.trim();
     const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-    if (!supabaseUrl || !serviceRoleKey) throw new Error('필수 환경변수 누락');
+    if (!supabaseUrl || !serviceRoleKey) {
+      const missing = [!supabaseUrl ? 'SUPABASE_URL' : null, !serviceRoleKey ? 'SUPABASE_SERVICE_ROLE_KEY' : null].filter(Boolean).join(', ');
+      throw new Error(`필수 환경변수 누락: ${missing}`);
+    }
     const db = createClient(supabaseUrl, serviceRoleKey, { db:{ schema:STT_SCHEMA }, auth:{ persistSession:false, autoRefreshToken:false, detectSessionInUrl:false } });
 
     const [{ data:evaluations, error:e1 }, { data:classifications, error:e2 }, { data:staffDrafts, error:e3 }] = await Promise.all([
@@ -16,7 +19,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       db.from('complaint_classifications').select('session_id,primary_category,issues,confidence,needs_review,rationale,classified_at').order('classified_at',{ascending:false}),
       db.from('drafts').select('session_id,content,confirmed_at').eq('source_type','staff').eq('status','confirmed').eq('is_current',true).order('confirmed_at',{ascending:false}).limit(30),
     ]);
-    if (e1) throw e1; if (e2) throw e2; if (e3) throw e3;
+    if (e1) throw new Error(`draft_evaluations 조회 실패: ${e1.message}`);
+    if (e2) throw new Error(`complaint_classifications 조회 실패: ${e2.message}`);
+    if (e3) throw new Error(`drafts 조회 실패: ${e3.message}`);
 
     const evals = evaluations ?? [];
     const classes = classifications ?? [];
@@ -50,7 +55,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       note: evals.length < 30 ? '표본이 30건 미만이므로 현황 확인용 지표입니다.' : null,
     });
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
     console.error('[stt-quality-dashboard] failed:', error);
-    return res.status(500).json({ error:'품질 대시보드 조회 실패' });
+    return res.status(500).json({
+      error:'품질 대시보드 조회 실패',
+      ...(process.env.VERCEL_ENV !== 'production' ? { detail } : {}),
+    });
   }
 }
