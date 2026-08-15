@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import './RagAnswerPage.css';
 
 type GatewayEvent = { type:string; callId:string; sequence:number; note:string };
-type Manifest = { ok?:boolean; version?:string; service?:string; websocket?:{path:string;transport:string;hostedSeparately:boolean;heartbeatMs:number;maxFrameBytes:number}; internalAudio?:{codec:string;sampleRate:number;channels:number}; scope?:string };
+type Manifest = { version?:string; service?:string; websocket?:{path:string;transport:string;hostedSeparately:boolean;heartbeatMs:number;maxFrameBytes:number}; internalAudio?:{codec:string;sampleRate:number;channels:number}; scope?:string };
+type TelephonyContract = { ok?:boolean; mediaGateway?:Manifest; error?:string };
 
 const CALL_ID='sim-call-001';
 
@@ -13,10 +14,12 @@ export default function MediaGatewayPage(){
   const [manifest,setManifest]=useState<Manifest|null>(null);
   const [error,setError]=useState<string|null>(null);
 
-  const append=(type:string,note:string,nextState?:typeof state)=>{
-    const next=sequence+1;
-    setSequence(next);
-    setEvents(prev=>[...prev,{type,callId:CALL_ID,sequence:next,note}]);
+  const append=(type:string,note:string,nextState?:'idle'|'active'|'handoff'|'closed')=>{
+    setSequence(prev=>{
+      const next=prev+1;
+      setEvents(current=>[...current,{type,callId:CALL_ID,sequence:next,note}]);
+      return next;
+    });
     if(nextState)setState(nextState);
   };
 
@@ -29,14 +32,19 @@ export default function MediaGatewayPage(){
   const loadManifest=async()=>{
     setError(null);
     try{
-      const response=await fetch('/api/media-gateway');
-      const body=await response.json() as Manifest & {error?:string};
+      const response=await fetch('/api/telephony-adapter');
+      const body=await response.json() as TelephonyContract;
       if(!response.ok)throw new Error(body.error||'manifest 조회 실패');
-      setManifest(body);
+      if(!body.mediaGateway)throw new Error('media gateway manifest가 없습니다.');
+      setManifest(body.mediaGateway);
     }catch(e){setError(e instanceof Error?e.message:String(e));}
   };
 
-  const start=()=>{setEvents([]);setSequence(0);setState('active');setTimeout(()=>append('call.started','지속형 WebSocket 세션 시작','active'),0);};
+  const start=()=>{
+    setEvents([{type:'call.started',callId:CALL_ID,sequence:1,note:'지속형 WebSocket 세션 시작'}]);
+    setSequence(1);
+    setState('active');
+  };
   const inbound=()=>append('audio.inbound','전화망 → Gateway: PCM 16k mono 프레임 수신');
   const outbound=()=>append('audio.outbound','AI/Server TTS → Gateway → 전화망: 음성 프레임 송신');
   const clear=()=>append('audio.clear','barge-in 대비 재생 버퍼 비우기');
@@ -54,7 +62,7 @@ export default function MediaGatewayPage(){
 
     <section className="rag-input-card">
       <h2>Gateway 계약 확인</h2>
-      <p>Vercel은 계약/관리 API만 제공하고, 장시간 WebSocket 연결은 별도 <code>gateway/</code> 서비스가 담당합니다.</p>
+      <p>Vercel은 기존 Telephony Adapter 관리 API를 재사용하고, 장시간 WebSocket 연결은 별도 <code>gateway/</code> 서비스가 담당합니다.</p>
       <div className="rag-actions"><button className="primary" type="button" onClick={()=>void loadManifest()}>계약 API 확인</button></div>
       {manifest&&<div className="evidence-card"><p><strong>{manifest.version} · {manifest.service}</strong></p><p>WebSocket: {manifest.websocket?.path} · heartbeat {manifest.websocket?.heartbeatMs}ms · max frame {manifest.websocket?.maxFrameBytes} bytes</p><p>내부 오디오: {manifest.internalAudio?.codec} / {manifest.internalAudio?.sampleRate}Hz / {manifest.internalAudio?.channels}ch</p><small>{manifest.scope}</small></div>}
     </section>
