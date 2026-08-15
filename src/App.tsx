@@ -2,9 +2,10 @@ import { useState } from 'react';
 import TestCallPage from './pages/TestCallPage';
 import QualityDashboardPage from './pages/QualityDashboardPage';
 import RagAnswerPage from './pages/RagAnswerPage';
+import AutoVoiceLoopPage from './pages/AutoVoiceLoopPage';
 
 function App() {
-  const [view, setView] = useState<'stt' | 'dashboard' | 'rag'>('stt');
+  const [view, setView] = useState<'stt' | 'dashboard' | 'rag' | 'auto'>('stt');
 
   return (
     <>
@@ -18,8 +19,11 @@ function App() {
         <button type="button" className={view === 'rag' ? 'active' : ''} onClick={() => setView('rag')}>
           승인근거 AI 답변
         </button>
+        <button type="button" className={view === 'auto' ? 'active' : ''} onClick={() => setView('auto')}>
+          자동 음성상담
+        </button>
       </nav>
-      {view === 'stt' ? <TestCallPage /> : view === 'dashboard' ? <QualityDashboardPage /> : <RagAnswerPage />}
+      {view === 'stt' ? <TestCallPage /> : view === 'dashboard' ? <QualityDashboardPage /> : view === 'rag' ? <RagAnswerPage /> : <AutoVoiceLoopPage />}
     </>
   );
 }
