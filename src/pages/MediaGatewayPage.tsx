@@ -9,16 +9,14 @@ const CALL_ID='sim-call-001';
 
 export default function MediaGatewayPage(){
   const [events,setEvents]=useState<GatewayEvent[]>([]);
-  const [sequence,setSequence]=useState(0);
   const [state,setState]=useState<'idle'|'active'|'handoff'|'closed'>('idle');
   const [manifest,setManifest]=useState<Manifest|null>(null);
   const [error,setError]=useState<string|null>(null);
 
   const append=(type:string,note:string,nextState?:'idle'|'active'|'handoff'|'closed')=>{
-    setSequence(prev=>{
-      const next=prev+1;
-      setEvents(current=>[...current,{type,callId:CALL_ID,sequence:next,note}]);
-      return next;
+    setEvents(current=>{
+      const next=(current.at(-1)?.sequence??0)+1;
+      return [...current,{type,callId:CALL_ID,sequence:next,note}];
     });
     if(nextState)setState(nextState);
   };
@@ -42,7 +40,6 @@ export default function MediaGatewayPage(){
 
   const start=()=>{
     setEvents([{type:'call.started',callId:CALL_ID,sequence:1,note:'지속형 WebSocket 세션 시작'}]);
-    setSequence(1);
     setState('active');
   };
   const inbound=()=>append('audio.inbound','전화망 → Gateway: PCM 16k mono 프레임 수신');
