@@ -4,9 +4,10 @@ import QualityDashboardPage from './pages/QualityDashboardPage';
 import RagAnswerPage from './pages/RagAnswerPage';
 import AutoVoiceLoopPage from './pages/AutoVoiceLoopPage';
 import TelephonyAdapterPage from './pages/TelephonyAdapterPage';
+import MediaGatewayPage from './pages/MediaGatewayPage';
 
 function App() {
-  const [view, setView] = useState<'stt' | 'dashboard' | 'rag' | 'auto' | 'telephony'>('stt');
+  const [view, setView] = useState<'stt' | 'dashboard' | 'rag' | 'auto' | 'telephony' | 'gateway'>('stt');
 
   return (
     <>
@@ -26,12 +27,16 @@ function App() {
         <button type="button" className={view === 'telephony' ? 'active' : ''} onClick={() => setView('telephony')}>
           전화망 어댑터
         </button>
+        <button type="button" className={view === 'gateway' ? 'active' : ''} onClick={() => setView('gateway')}>
+          미디어 게이트웨이
+        </button>
       </nav>
       {view === 'stt' ? <TestCallPage />
         : view === 'dashboard' ? <QualityDashboardPage />
           : view === 'rag' ? <RagAnswerPage />
             : view === 'auto' ? <AutoVoiceLoopPage />
-              : <TelephonyAdapterPage />}
+              : view === 'telephony' ? <TelephonyAdapterPage />
+                : <MediaGatewayPage />}
     </>
   );
 }
