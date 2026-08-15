@@ -210,7 +210,8 @@ PR #7 병합 후 main `d2c1797f00c1d6d41ed8f5f150a0fa4e25c1624e`를 Production�
 
 2026-08-15 Supabase Edge Functions 기반 비동기 파일 전사의 완료 상태 판정과 callback 보안을 회귀검증했습니다.
 
-- 예정 태그: `v0.4.1-stt-clova-async-callback`
+- 기준 main SHA: `bc34dd61a81a9065b10a3f48c3f9e9677980bc10`
+- 기준 태그: `v0.4.1-stt-clova-async-callback`
 - 배포 기준: `stt-submit v8` + `stt-clova-callback v7`
 - 검증 job: `bb2d4784-9ab4-491f-b040-2808067cb14f`
 - `pending → processing → completed`, `progress=100` 확인
@@ -218,6 +219,7 @@ PR #7 병합 후 main `d2c1797f00c1d6d41ed8f5f150a0fa4e25c1624e`를 Production�
 - transcript / segment / transcript_chunks 저장 확인
 - callback URL의 고정 query secret 제거 확인
 - provider token 원문을 event/transcript metadata에 중복 저장하지 않음
+- Supabase Free 플랜에서는 Leaked Password Protection을 사용할 수 없어 해당 Advisor WARN을 기준선의 수용된 잔여 경고로 기록
 - 상세 검증: `docs/stt-clova-async-baseline-20260815.md`
 
 ## 현재 범위
