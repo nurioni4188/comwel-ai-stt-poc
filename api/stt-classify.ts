@@ -11,7 +11,7 @@ const SCHEMA = {
   required: ['primary_category','issues','confidence','needs_review','rationale'],
   properties: {
     primary_category: { type: 'string', enum: CATEGORIES },
-    issues: { type: 'array', maxItems: 5, uniqueItems: true, items: { type: 'string', enum: ISSUES } },
+    issues: { type: 'array', maxItems: 5, items: { type: 'string', enum: ISSUES } },
     confidence: { type: 'number', minimum: 0, maximum: 1 },
     needs_review: { type: 'boolean' },
     rationale: { type: 'string', minLength: 1, maxLength: 1000 },
@@ -19,6 +19,7 @@ const SCHEMA = {
 } as const;
 
 type OpenAIResponse = { error?: { message?: string } | null; output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string; refusal?: string }> }> };
+type ClassifiedOutput = { primary_category:string; issues:string[]; confidence:number; needs_review:boolean; rationale:string };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') { res.setHeader('Allow','POST'); return res.status(405).json({ error: 'Method not allowed' }); }
@@ -50,6 +51,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           '제공된 담당자 확정본에만 근거해 업무영역 1개와 쟁점을 분류하세요.',
           '분류는 자동처분·자격판단·법률판단이 아니며 애매하면 needs_review=true로 표시하세요.',
           'confidence가 0.75 미만이면 needs_review=true로 하세요.',
+          'issues에는 중복 없이 최대 5개의 쟁점만 넣으세요.',
           'rationale에는 분류 근거를 짧게 설명하되 새로운 사실을 만들지 마세요.'
         ].join('\n'),
         input: [{ role: 'user', content: [{ type: 'input_text', text: `[담당자 확정 민원 요지]\n${String(draft.content).slice(0,12000)}` }] }],
@@ -64,15 +66,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (part.type === 'output_text' && part.text) output = part.text;
     }
     if (!output) throw new Error('분류 결과가 비어 있습니다.');
-    const classified = JSON.parse(output) as { primary_category:string; issues:string[]; confidence:number; needs_review:boolean; rationale:string };
-    const needsReview = Boolean(classified.needs_review || Number(classified.confidence) < 0.75);
+
+    const parsed = JSON.parse(output) as ClassifiedOutput;
+    if (!CATEGORIES.includes(parsed.primary_category as (typeof CATEGORIES)[number])) {
+      throw new Error('허용되지 않은 업무영역 분류 결과입니다.');
+    }
+    const normalizedIssues = [...new Set((Array.isArray(parsed.issues) ? parsed.issues : [])
+      .filter((issue): issue is (typeof ISSUES)[number] => ISSUES.includes(issue as (typeof ISSUES)[number])))]
+      .slice(0, 5);
+    const confidence = Number(parsed.confidence);
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+      throw new Error('분류 신뢰도 값이 유효하지 않습니다.');
+    }
+    const rationale = String(parsed.rationale ?? '').trim();
+    if (!rationale || rationale.length > 1000) {
+      throw new Error('분류 근거가 유효하지 않습니다.');
+    }
+    const needsReview = Boolean(parsed.needs_review || confidence < 0.75);
+
     const { data: saved, error: saveError } = await db.rpc('save_complaint_classification', {
       p_session_id: sessionId,
-      p_primary_category: classified.primary_category,
-      p_issues: classified.issues,
-      p_confidence: classified.confidence,
+      p_primary_category: parsed.primary_category,
+      p_issues: normalizedIssues,
+      p_confidence: confidence,
       p_needs_review: needsReview,
-      p_rationale: classified.rationale,
+      p_rationale: rationale,
       p_model_name: model,
       p_schema_version: 'complaint_classification_v1',
     });
