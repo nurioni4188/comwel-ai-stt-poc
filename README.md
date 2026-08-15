@@ -22,6 +22,8 @@
 → 이전 버전 superseded 보존 / 현재 버전 confirmed 유지
 ```
 
+별도 CLOVA 비동기 파일 전사 검증 흐름은 Supabase Edge Functions `stt-submit` → `stt-clova-callback`으로 구성합니다. callback 완료 후 `stt_jobs`, `stt_transcripts`, `stt_segments`, `stt_poc.transcript_chunks`를 갱신합니다.
+
 ## 민원 요지 초안 — extractive v1
 
 완료된 세션의 STT 원문 중 요청·문의와 관련된 문장을 서버에서 추출해 담당자 검토용 1차 요지로 저장합니다.
@@ -69,6 +71,8 @@ AI 정제본 또는 원문 기반 초안 생성 후 담당자가 직접 수정·
 - 비밀값을 `VITE_*` 환경변수, React 코드, Git 커밋에 넣지 않습니다.
 - `.env`, `.env.*`, `.vercel`, `node_modules`, `dist`는 Git에서 제외합니다.
 - `stt_poc` 스키마는 `anon`, `authenticated` 접근을 철회하고 `service_role`만 사용합니다.
+- CLOVA callback URL에 장기 고정 secret을 query string으로 넣지 않습니다.
+- callback payload의 provider token은 `stt_jobs.provider_job_id`와 일치할 때만 처리합니다.
 
 ## 환경변수
 
@@ -110,7 +114,24 @@ supabase/migrations/20260809_draft_review_versioning.sql
 supabase/migrations/20260809_ai_summary_refine.sql
 ```
 
+CLOVA async callback 보안 정리는 다음 migration으로 추적합니다.
+
+```text
+supabase/migrations/20260815_restrict_rls_auto_enable_execute.sql
+```
+
 Data API에서 `stt_poc` 스키마가 노출되어 있어야 서버의 Supabase 클라이언트가 해당 스키마를 사용할 수 있습니다. 브라우저 공개 접근은 허용하지 않습니다.
+
+## Supabase Edge Functions
+
+```text
+supabase/functions/stt-submit/index.ts
+supabase/functions/stt-clova-callback/index.ts
+supabase/config.toml
+```
+
+- `stt-submit`: user JWT 필요 (`verify_jwt=true`)
+- `stt-clova-callback`: 외부 CLOVA webhook (`verify_jwt=false`), provider token 일치 검증 필수
 
 ## 개발 명령
 
@@ -184,6 +205,20 @@ PR #7 병합 후 main `d2c1797f00c1d6d41ed8f5f150a0fa4e25c1624e`를 Production�
 - 같은 세션 AI 정제 재실행 시 불필요한 추가 AI 버전이 생성되지 않음 확인
 - 자동 제출·자동 처분·자동 확정 없음 유지
 - Production 최종 회귀검증 완료
+
+### v0.4.1 — CLOVA async callback 안정화 기준선
+
+2026-08-15 Supabase Edge Functions 기반 비동기 파일 전사의 완료 상태 판정과 callback 보안을 회귀검증했습니다.
+
+- 예정 태그: `v0.4.1-stt-clova-async-callback`
+- 배포 기준: `stt-submit v8` + `stt-clova-callback v7`
+- 검증 job: `bb2d4784-9ab4-491f-b040-2808067cb14f`
+- `pending → processing → completed`, `progress=100` 확인
+- callback `SUCCEEDED` 처리 확인
+- transcript / segment / transcript_chunks 저장 확인
+- callback URL의 고정 query secret 제거 확인
+- provider token 원문을 event/transcript metadata에 중복 저장하지 않음
+- 상세 검증: `docs/stt-clova-async-baseline-20260815.md`
 
 ## 현재 범위
 
