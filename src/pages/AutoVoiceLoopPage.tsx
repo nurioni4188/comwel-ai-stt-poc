@@ -8,6 +8,19 @@ type Turn={role:'user'|'assistant';content:string;generated?:boolean;evidence?:E
 type Phase='idle'|'listening'|'transcribing'|'thinking'|'speaking'|'paused'|'error';
 
 const LISTEN_WINDOW_MS=8000;
+const MAX_LOW_QUALITY_RETRIES=3;
+
+function isLowQualityTranscript(value:string){
+  const compact=value.replace(/[^가-힣a-zA-Z0-9]/g,'').toLowerCase();
+  if(compact.length<4)return true;
+  const fillerOnly=/^(으+|어+|음+|아+|허+|하+|흠+|응+|네+|예+)+$/.test(compact);
+  if(fillerOnly)return true;
+  const chars=[...compact];
+  const unique=new Set(chars);
+  if(compact.length<=10&&unique.size<=2)return true;
+  const repeated=chars.filter((ch,i)=>i>0&&ch===chars[i-1]).length;
+  return compact.length<=12&&repeated>=Math.max(2,Math.floor(compact.length*0.5));
+}
 
 export default function AutoVoiceLoopPage(){
   const {isRecording,isSending,error:sttError,cumulativeText,startRecording,stopRecording,resetRecording}=useCallRecorder();
@@ -24,6 +37,7 @@ export default function AutoVoiceLoopPage(){
   const turnsRef=useRef<Turn[]>([]);
   const stopRecordingRef=useRef(stopRecording);
   const runningRef=useRef(false);
+  const lowQualityRetriesRef=useRef(0);
 
   useEffect(()=>{turnsRef.current=turns;},[turns]);
   useEffect(()=>{stopRecordingRef.current=stopRecording;},[stopRecording]);
@@ -90,9 +104,21 @@ export default function AutoVoiceLoopPage(){
     window.speechSynthesis.speak(utterance);
   },[beginListening,stopLoop]);
 
+  const promptRetry=useCallback((recognized:string)=>{
+    lowQualityRetriesRef.current+=1;
+    if(lowQualityRetriesRef.current>=MAX_LOW_QUALITY_RETRIES){
+      stopLoop('질문을 명확하게 인식하지 못해 자동 상담을 중지했습니다. 다시 시작해 주세요.');
+      return;
+    }
+    setError(null);
+    setMessage(`인식문 “${recognized||'(없음)'}”은 질문으로 보기 어려워 다시 듣습니다.`);
+    speakAndContinue('질문을 정확히 인식하지 못했습니다. 한 문장으로 다시 말씀해 주세요.');
+  },[speakAndContinue,stopLoop]);
+
   const processQuestion=useCallback(async(question:string)=>{
     if(processingRef.current||!runningRef.current)return;
     processingRef.current=true;
+    lowQualityRetriesRef.current=0;
     setPhase('thinking');
     setMessage('승인근거를 검색하고 AI 답변을 생성하고 있습니다.');
     try{
@@ -121,9 +147,9 @@ export default function AutoVoiceLoopPage(){
   useEffect(()=>{
     if(!running||phase!=='transcribing'||isRecording||isSending||processingRef.current)return;
     const text=cumulativeText.trim();
-    if(text){void processQuestion(text);return;}
-    stopLoop('인식된 발화가 없어 자동 상담을 멈췄습니다. 다시 시작해 주세요.');
-  },[cumulativeText,isRecording,isSending,phase,processQuestion,running,stopLoop]);
+    if(!text||isLowQualityTranscript(text)){promptRetry(text);return;}
+    void processQuestion(text);
+  },[cumulativeText,isRecording,isSending,phase,processQuestion,promptRetry,running]);
 
   useEffect(()=>{
     if(sttError&&running){setError(sttError);stopLoop('STT 오류로 자동 상담을 중지했습니다.');}
@@ -136,6 +162,7 @@ export default function AutoVoiceLoopPage(){
       return;
     }
     runningRef.current=true;
+    lowQualityRetriesRef.current=0;
     setRunning(true);
     setTurns([]);
     setError(null);
@@ -146,7 +173,7 @@ export default function AutoVoiceLoopPage(){
 
   return <main className="rag-page">
     <header className="rag-header"><p className="rag-kicker">COMWEL AI STT PoC · v0.11.0</p><h1>자동 음성대화 루프</h1><p>한 번 시작하면 <strong>CLOVA STT → 승인근거 RAG → AI 답변 → Browser TTS</strong> 순서로 자동 처리하고 다음 발화를 기다립니다.</p></header>
-    <section className="rag-warning"><strong>내부 시연용</strong> · 개인정보 및 실제 민원 원문 입력 금지 · 1회 발화창 8초 · 근거 부족/오류 시 자동 중지 · 자동처분/자동발송 없음</section>
+    <section className="rag-warning"><strong>내부 시연용</strong> · 개인정보 및 실제 민원 원문 입력 금지 · 1회 발화창 8초 · 저품질 STT는 최대 2회 자동 재질문 · 근거 부족/오류 시 자동 중지 · 자동처분/자동발송 없음</section>
 
     <section className="rag-input-card">
       <h2>자동 상담 제어</h2>
