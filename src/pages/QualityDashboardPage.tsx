@@ -27,6 +27,7 @@ type DashboardResponse = {
   }>;
   note?: string | null;
   error?: string;
+  detail?: string;
 };
 
 const ratingLabel: Record<string,string> = { accurate:'정확', minor_edit:'경미한 수정', major_edit:'상당한 수정', unusable:'사용 불가' };
@@ -46,7 +47,7 @@ export default function QualityDashboardPage() {
     try {
       const response = await fetch('/api/stt-quality-dashboard');
       const result = await response.json() as DashboardResponse;
-      if (!response.ok) throw new Error(result.error || '대시보드 조회 실패');
+      if (!response.ok) throw new Error([result.error, result.detail].filter(Boolean).join(' · ') || '대시보드 조회 실패');
       setData(result);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setLoading(false); }
@@ -58,8 +59,8 @@ export default function QualityDashboardPage() {
     setClassifying(sessionId); setError(null);
     try {
       const response = await fetch('/api/stt-classify',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({sessionId}) });
-      const result = await response.json() as { error?:string };
-      if (!response.ok) throw new Error(result.error || '자동분류 실패');
+      const result = await response.json() as { error?:string; detail?:string };
+      if (!response.ok) throw new Error([result.error, result.detail].filter(Boolean).join(' · ') || '자동분류 실패');
       await load();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setClassifying(null); }
