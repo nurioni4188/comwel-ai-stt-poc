@@ -167,8 +167,8 @@
 - [x] Edge Function 로그에 callback query secret 미노출
 - [x] `public.rls_auto_enable()` PUBLIC/anon/authenticated EXECUTE 권한 회수
 - [x] Security Advisor의 SECURITY DEFINER 실행 권한 WARN 제거
-- [ ] Supabase Auth Leaked Password Protection 활성화
-- [x] 예정 기준 태그명 `v0.4.1-stt-clova-async-callback`
+- [x] 기준 태그 `v0.4.1-stt-clova-async-callback`가 main SHA `bc34dd61a81a9065b10a3f48c3f9e9677980bc10`을 가리키는 것 확인
+- [x] Supabase Free 플랜 제약으로 Leaked Password Protection은 미지원 — Advisor WARN을 수용된 잔여 경고로 기록
 
 ## 기준선 이후 원칙
 
@@ -176,7 +176,7 @@
 - STT + 민원 요지 기준 태그는 `v0.2.0-stt-summary`입니다.
 - 담당자 수정·확정 기준 태그는 `v0.3.0-stt-draft-review`입니다.
 - 생성형 AI 민원 요지 정제 기준 태그는 `v0.4.0-stt-ai-summary-refine`입니다.
-- CLOVA async callback 안정화 기준 태그는 `v0.4.1-stt-clova-async-callback`로 확정 예정입니다.
+- CLOVA async callback 안정화 기준 태그는 `v0.4.1-stt-clova-async-callback`입니다.
 - 기준선 이후 기능 변경은 `main`에 직접 반영하지 않고 별도 기능 브랜치에서 진행합니다.
 - 비밀값은 서버 환경변수/Secret에서만 관리하고 Git 저장소에는 커밋하지 않습니다.
 - callback URL에 장기 고정 secret을 query string으로 넣지 않습니다.
