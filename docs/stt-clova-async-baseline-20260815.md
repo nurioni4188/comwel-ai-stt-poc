@@ -2,7 +2,8 @@
 
 ## 기준선
 
-- 예정 태그: `v0.4.1-stt-clova-async-callback`
+- 기준 태그: `v0.4.1-stt-clova-async-callback`
+- 기준 main SHA: `bc34dd61a81a9065b10a3f48c3f9e9677980bc10`
 - Supabase project: `comwel-ai-stt-poc`
 - `stt-submit`: version 8 / `verify_jwt=true`
 - `stt-clova-callback`: version 7 / `verify_jwt=false`
@@ -42,7 +43,7 @@
 - [x] `ensure_rls` event trigger 활성 상태 유지
 - [x] `PUBLIC`, `anon`, `authenticated`의 직접 EXECUTE 권한 회수
 - [x] Advisor의 SECURITY DEFINER 실행 가능 WARN 제거 확인
-- [ ] Leaked Password Protection 활성화 — Dashboard Auth 설정에서 수동 활성화 필요
+- [x] Leaked Password Protection은 Supabase Free 플랜에서 미지원임을 확인하고 해당 WARN을 기준선의 수용된 잔여 경고로 기록
 
 ## 운영 원칙
 
