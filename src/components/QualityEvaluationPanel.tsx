@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import './QualityEvaluationPanel.css';
 
 type OverallRating = 'accurate' | 'minor_edit' | 'major_edit' | 'unusable';
 
