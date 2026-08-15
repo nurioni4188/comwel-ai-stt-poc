@@ -1,11 +1,11 @@
 {
   "name": "comwel-ai-media-gateway",
   "private": true,
-  "version": "0.13.0",
+  "version": "0.14.0",
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs"
+    "check": "node --check server.mjs && node --check twilioAdapter.mjs && node --check openaiTts.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"
