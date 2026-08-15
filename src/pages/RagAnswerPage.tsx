@@ -2,19 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import './RagAnswerPage.css';
 
 type Evidence={chunkId:string;documentId:string;title:string;sourceLabel:string;sourceUrl:string|null;domain:string;excerpt:string;score:number;approvedAt:string|null;isTestFixture:boolean};
-type RagResponse={ok?:boolean;generated?:boolean;answer?:string;ragRunId?:string;confidence?:number;evidence?:Evidence[];needsHumanReview?:boolean;reason?:string;mode?:string;contextTurns?:number;error?:string;detail?:string};
-type Turn={role:'user'|'assistant';content:string;generated?:boolean;ragRunId?:string;evidence?:Evidence[];confidence?:number;needsHumanReview?:boolean};
+type RagResponse={ok?:boolean;generated?:boolean;answer?:string;confidence?:number;evidence?:Evidence[];needsHumanReview?:boolean;reason?:string;mode?:string;contextTurns?:number;error?:string;detail?:string};
+type Turn={role:'user'|'assistant';content:string;generated?:boolean;evidence?:Evidence[];confidence?:number;needsHumanReview?:boolean};
 
 export default function RagAnswerPage(){
   const [question,setQuestion]=useState('개인정보가 포함된 실제 민원 원문을 이 PoC에 입력해도 되나요?');
   const [turns,setTurns]=useState<Turn[]>([]);
   const [loading,setLoading]=useState(false);
-  const [ttsLoading,setTtsLoading]=useState<number|null>(null);
+  const [speakingIndex,setSpeakingIndex]=useState<number|null>(null);
   const [error,setError]=useState<string|null>(null);
-  const audioRef=useRef<HTMLAudioElement|null>(null);
-  const objectUrlRef=useRef<string|null>(null);
+  const utteranceRef=useRef<SpeechSynthesisUtterance|null>(null);
 
-  useEffect(()=>()=>{ if(objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current); audioRef.current?.pause(); },[]);
+  useEffect(()=>()=>{ if('speechSynthesis' in window) window.speechSynthesis.cancel(); },[]);
 
   const ask=async()=>{
     const trimmed=question.trim(); if(trimmed.length<2)return;
@@ -25,37 +24,47 @@ export default function RagAnswerPage(){
       const body=await response.json() as RagResponse;
       if(!response.ok)throw new Error([body.error,body.detail].filter(Boolean).join(' · ')||'답변 생성 실패');
       const userTurn:Turn={role:'user',content:trimmed};
-      const assistantTurn:Turn={role:'assistant',content:body.answer??'',generated:body.generated,ragRunId:body.ragRunId,evidence:body.evidence??[],confidence:body.confidence,needsHumanReview:body.needsHumanReview};
+      const assistantTurn:Turn={role:'assistant',content:body.answer??'',generated:body.generated,evidence:body.evidence??[],confidence:body.confidence,needsHumanReview:body.needsHumanReview};
       setTurns(prev=>[...prev,userTurn,assistantTurn].slice(-12));
       setQuestion('');
     }catch(e){setError(e instanceof Error?e.message:String(e));}
     finally{setLoading(false);}
   };
 
-  const speak=async(turn:Turn,index:number)=>{
-    if(!turn.generated||!turn.ragRunId)return;
-    setTtsLoading(index);setError(null);
-    try{
-      const response=await fetch('/api/stt-tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ragRunId:turn.ragRunId,text:turn.content})});
-      if(!response.ok){
-        let message='음성응답 생성 실패';
-        try{const body=await response.json() as {error?:string};message=body.error||message;}catch{}
-        throw new Error(message);
-      }
-      const blob=await response.blob();
-      if(objectUrlRef.current)URL.revokeObjectURL(objectUrlRef.current);
-      const url=URL.createObjectURL(blob);objectUrlRef.current=url;
-      audioRef.current?.pause();
-      const audio=new Audio(url);audioRef.current=audio;await audio.play();
-    }catch(e){setError(e instanceof Error?e.message:String(e));}
-    finally{setTtsLoading(null);}
+  const stopSpeech=()=>{
+    if('speechSynthesis' in window) window.speechSynthesis.cancel();
+    utteranceRef.current=null;
+    setSpeakingIndex(null);
+  };
+
+  const speak=(turn:Turn,index:number)=>{
+    if(!turn.generated||!turn.content.trim())return;
+    if(!('speechSynthesis' in window)||typeof SpeechSynthesisUtterance==='undefined'){
+      setError('이 브라우저에서는 음성 읽기 기능을 지원하지 않습니다. Chrome 또는 Edge에서 다시 확인해 주세요.');
+      return;
+    }
+    setError(null);
+    window.speechSynthesis.cancel();
+    const utterance=new SpeechSynthesisUtterance(turn.content);
+    const voices=window.speechSynthesis.getVoices();
+    const koreanVoice=voices.find(voice=>voice.lang.toLowerCase().startsWith('ko'));
+    if(koreanVoice)utterance.voice=koreanVoice;
+    utterance.lang='ko-KR';
+    utterance.rate=1;
+    utterance.pitch=1;
+    utterance.volume=1;
+    utterance.onstart=()=>setSpeakingIndex(index);
+    utterance.onend=()=>{utteranceRef.current=null;setSpeakingIndex(null);};
+    utterance.onerror=()=>{utteranceRef.current=null;setSpeakingIndex(null);setError('브라우저 음성 재생 중 오류가 발생했습니다.');};
+    utteranceRef.current=utterance;
+    window.speechSynthesis.speak(utterance);
   };
 
   return <main className="rag-page">
-    <header className="rag-header"><p className="rag-kicker">COMWEL AI STT PoC · v0.10.0</p><h1>다회차 승인근거 AI 음성상담</h1><p>승인근거 기반 AI 답변을 생성하고, <strong>실제 생성된 답변만</strong> CLOVA Voice로 음성 재생합니다.</p></header>
+    <header className="rag-header"><p className="rag-kicker">COMWEL AI STT PoC · v0.10.0</p><h1>다회차 승인근거 AI 음성상담</h1><p>승인근거 기반 AI 답변을 생성하고, <strong>브라우저 내장 TTS</strong>로 비용 없이 음성 재생합니다.</p></header>
     <section className="rag-warning"><strong>내부 시연용</strong> · 개인정보 및 실제 민원 원문 입력 금지 · 자동처분/자동발송 없음 · 담당자 최종확인 필수</section>
 
-    {turns.length>0&&<section className="rag-result"><div className="rag-result-top"><h2>대화</h2><div><button type="button" onClick={()=>audioRef.current?.pause()}>음성 정지</button> <button type="button" onClick={()=>{audioRef.current?.pause();setTurns([])}}>대화 초기화</button></div></div><div className="evidence-list">{turns.map((turn,i)=><article className="evidence-card" key={`${turn.role}-${i}`}><strong>{turn.role==='user'?'민원인':'AI'}</strong><p>{turn.content}</p>{turn.role==='assistant'&&<small>{turn.generated?'승인근거 기반 답변':'자동답변 보류'}{typeof turn.confidence==='number'?` · 신뢰도 ${(turn.confidence*100).toFixed(0)}%`:''}{turn.needsHumanReview?' · 담당자 확인 필요':''}</small>}{turn.role==='assistant'&&turn.generated&&turn.ragRunId&&<p><button type="button" disabled={ttsLoading===i} onClick={()=>void speak(turn,i)}>{ttsLoading===i?'음성 생성 중…':'🔊 음성으로 듣기'}</button></p>}{turn.role==='assistant'&&!turn.generated&&<p><small>자동답변 보류 건은 TTS를 생성하지 않습니다.</small></p>}{turn.role==='assistant'&&(turn.evidence?.length??0)>0&&<details><summary>사용 근거 {turn.evidence?.length}건</summary>{turn.evidence?.map((e,j)=><p key={e.chunkId}><strong>근거 {j+1}. {e.title}</strong><br/>{e.excerpt}</p>)}</details>}</article>)}</div></section>}
+    {turns.length>0&&<section className="rag-result"><div className="rag-result-top"><h2>대화</h2><div><button type="button" onClick={stopSpeech}>음성 정지</button> <button type="button" onClick={()=>{stopSpeech();setTurns([])}}>대화 초기화</button></div></div><div className="evidence-list">{turns.map((turn,i)=><article className="evidence-card" key={`${turn.role}-${i}`}><strong>{turn.role==='user'?'민원인':'AI'}</strong><p>{turn.content}</p>{turn.role==='assistant'&&<small>{turn.generated?'승인근거 기반 답변':'자동답변 보류'}{typeof turn.confidence==='number'?` · 신뢰도 ${(turn.confidence*100).toFixed(0)}%`:''}{turn.needsHumanReview?' · 담당자 확인 필요':''}</small>}{turn.role==='assistant'&&turn.generated&&<p><button type="button" onClick={()=>speak(turn,i)}>{speakingIndex===i?'🔊 재생 중 · 다시듣기':'🔊 음성으로 듣기'}</button></p>}{turn.role==='assistant'&&!turn.generated&&<p><small>자동답변 보류 건은 음성으로 읽지 않습니다.</small></p>}{turn.role==='assistant'&&(turn.evidence?.length??0)>0&&<details><summary>사용 근거 {turn.evidence?.length}건</summary>{turn.evidence?.map((e,j)=><p key={e.chunkId}><strong>근거 {j+1}. {e.title}</strong><br/>{e.excerpt}</p>)}</details>}</article>)}</div></section>}
 
     <section className="rag-input-card"><label htmlFor="rag-question">다음 민원 질문</label><textarea id="rag-question" value={question} onChange={e=>setQuestion(e.target.value)} maxLength={3000} rows={5} placeholder="이전 대화에 이어 질문하세요."/><div className="rag-actions"><button type="button" onClick={()=>setQuestion('개인정보가 포함된 실제 민원 원문을 이 PoC에 입력해도 되나요?')}>첫 질문 예시</button><button type="button" onClick={()=>setQuestion('그럼 주민등록번호가 들어간 내용도 입력하면 안 되나요?')}>후속 질문 예시</button><button type="button" onClick={()=>setQuestion('회사에서 이직사유를 자진퇴사로 신고했는데 제가 직접 권고사직으로 정정할 수 있나요?')}>근거 없음 예시</button><button className="primary" type="button" disabled={loading||question.trim().length<2} onClick={()=>void ask()}>{loading?'근거 검색 중…':'대화 이어서 답변'}</button></div></section>
     {error&&<div className="rag-error">{error}</div>}
