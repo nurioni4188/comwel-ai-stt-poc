@@ -1,0 +1,13 @@
+{
+  "name": "comwel-ai-media-gateway",
+  "private": true,
+  "version": "0.13.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

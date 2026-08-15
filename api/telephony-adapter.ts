@@ -9,6 +9,21 @@ const CAPABILITIES = {
   supportsDtmf: true,
 };
 
+const MEDIA_GATEWAY = {
+  version: 'v0.13.0',
+  service: 'media-gateway-baseline',
+  websocket: {
+    path: '/v1/media',
+    transport: 'persistent-websocket',
+    hostedSeparately: true,
+    heartbeatMs: 15000,
+    maxFrameBytes: 131072,
+  },
+  internalAudio: { codec: 'pcm_s16le', sampleRate: 16000, channels: 1 },
+  gatewayEvents: ['gateway.ready', 'audio.accepted', 'audio.outbound.accepted', 'audio.cleared', 'call.handoff.accepted', 'call.closed', 'gateway.error'],
+  scope: 'provider-neutral simulator only; no PSTN/SIP provider or server TTS connected',
+};
+
 function normalizeInbound(raw: unknown) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('telephony event must be an object');
@@ -82,7 +97,8 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
       internalAudio: { codec: 'pcm_s16le', sampleRate: 16000, channels: 1 },
       lifecycle: ['call.started', 'audio.inbound', 'dtmf.received', 'call.stopped'],
       commands: ['audio.outbound', 'audio.clear', 'call.handoff', 'call.hangup'],
-      note: 'Contract baseline only. No PSTN/SIP provider is connected yet.',
+      mediaGateway: MEDIA_GATEWAY,
+      note: 'Telephony Adapter v0.12 contract with v0.13 Media Gateway manifest. No PSTN/SIP provider is connected yet.',
     });
   }
 
