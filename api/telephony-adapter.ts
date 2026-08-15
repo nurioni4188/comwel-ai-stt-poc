@@ -10,8 +10,8 @@ const CAPABILITIES = {
 };
 
 const MEDIA_GATEWAY = {
-  version: 'v0.14.0',
-  service: 'media-gateway-provider-tts-baseline',
+  version: 'v0.15.0',
+  service: 'live-telephony-e2e-baseline',
   websocket: { path: '/v1/media', transport: 'persistent-websocket', hostedSeparately: true, heartbeatMs: 15000, maxFrameBytes: 131072 },
   internalAudio: { codec: 'pcm_s16le', sampleRate: 16000, channels: 1 },
   providerIntegration: {
@@ -24,6 +24,14 @@ const MEDIA_GATEWAY = {
     requiredSecrets: ['TWILIO_AUTH_TOKEN', 'PUBLIC_MEDIA_WSS_URL'],
     signatureValidationRequired: true,
   },
+  liveBridge: {
+    enabledByDefault: false,
+    turnWindowMs: 8000,
+    flow: ['Twilio media', 'PCM16/16k buffer', 'CLOVA STT', 'approved-evidence RAG', 'OpenAI server TTS', 'Twilio media playback'],
+    aiAppBaseUrlEnv: 'AI_APP_BASE_URL',
+    featureGate: 'LIVE_E2E_ENABLED=true',
+    rawAudioPersistence: false,
+  },
   serverTts: {
     implementation: 'openai-audio-speech',
     model: 'gpt-4o-mini-tts',
@@ -32,8 +40,9 @@ const MEDIA_GATEWAY = {
     requiredSecrets: ['OPENAI_API_KEY'],
     monthlyBaseFee: false,
   },
-  controlPlane: ['/health', '/v1/twiml', 'POST /v1/tts', 'POST /v1/clear'],
-  scope: 'integration baseline only; no Twilio phone number or paid live call connected',
+  gatewayRequiredEnv: ['TELEPHONY_PROVIDER=twilio', 'LIVE_E2E_ENABLED=true', 'TWILIO_AUTH_TOKEN', 'PUBLIC_MEDIA_WSS_URL', 'OPENAI_API_KEY', 'AI_APP_BASE_URL'],
+  controlPlane: ['/health', '/v1/twiml', '/v1/sessions', 'POST /v1/tts', 'POST /v1/clear'],
+  scope: 'live bridge code ready; persistent WSS hosting and Twilio trial number connection still required for real-call E2E',
 };
 
 function normalizeInbound(raw: unknown) {
@@ -72,17 +81,16 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'GET') {
     return res.status(200).json({
       ok: true,
-      version: 'v0.14.0',
-      mode: 'provider-plus-server-tts-integration-baseline',
+      version: 'v0.15.0',
+      mode: 'live-telephony-e2e-baseline',
       adapter: CAPABILITIES,
       internalAudio: { codec: 'pcm_s16le', sampleRate: 16000, channels: 1 },
       lifecycle: ['call.started', 'audio.inbound', 'dtmf.received', 'call.stopped'],
       commands: ['audio.outbound', 'audio.clear', 'call.handoff', 'call.hangup'],
       mediaGateway: MEDIA_GATEWAY,
-      note: 'Twilio provider adapter and OpenAI server TTS are implemented behind feature gates. No live phone number is connected yet.',
+      note: 'Live STT→RAG→Server TTS bridge is implemented. Real-call E2E requires persistent WSS deployment and Twilio Trial connection.',
     });
   }
-
   if (req.method === 'POST') {
     try {
       const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
@@ -91,7 +99,6 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ ok: false, error: 'invalid_telephony_event', detail: error instanceof Error ? error.message : String(error) });
     }
   }
-
   res.setHeader('Allow', 'GET, POST');
   return res.status(405).json({ error: 'Method not allowed' });
 }
