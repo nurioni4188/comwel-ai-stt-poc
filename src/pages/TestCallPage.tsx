@@ -1,6 +1,7 @@
 // src/pages/TestCallPage.tsx
 
 import { useEffect, useState } from 'react';
+import QualityEvaluationPanel from '../components/QualityEvaluationPanel';
 import { useCallRecorder } from '../hooks/useCallRecorder';
 
 interface SummaryApiResponse {
@@ -68,16 +69,11 @@ export default function TestCallPage() {
     resetDraftReviewState();
   }, [sessionId]);
 
-  const completedCount = chunks.filter(
-    (chunk) => chunk.status === 'success'
-  ).length;
-  const failedCount = chunks.filter(
-    (chunk) => chunk.status === 'error'
-  ).length;
+  const completedCount = chunks.filter((chunk) => chunk.status === 'success').length;
+  const failedCount = chunks.filter((chunk) => chunk.status === 'error').length;
   const hasRecognizedText = cumulativeText.trim().length > 0;
   const hasDraftText = summaryDraft.trim().length > 0;
-  const isReviewBusy =
-    isSummarizing || isRefining || isSaving || isConfirming;
+  const isReviewBusy = isSummarizing || isRefining || isSaving || isConfirming;
   const isConfirmed = reviewState === 'confirmed';
 
   const handleRecordingClick = async () => {
@@ -115,16 +111,12 @@ export default function TestCallPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId }),
       });
-
       const result = (await response.json()) as SummaryApiResponse;
       if (!response.ok) {
-        throw new Error(
-          result.detail || result.error || `요지 생성 실패: ${response.status}`
-        );
+        throw new Error(result.detail || result.error || `요지 생성 실패: ${response.status}`);
       }
 
-      const nextSummary =
-        typeof result.summary === 'string' ? result.summary.trim() : '';
+      const nextSummary = typeof result.summary === 'string' ? result.summary.trim() : '';
       setSummaryDraft(nextSummary);
       setStructuredSummary(null);
       setHasExtractiveDraft(Boolean(nextSummary));
@@ -135,23 +127,15 @@ export default function TestCallPage() {
           : null
       );
     } catch (summaryRequestError) {
-      const message = getErrorMessage(summaryRequestError);
+      setSummaryError(getErrorMessage(summaryRequestError));
       console.error('[TestCallPage] summary failed:', summaryRequestError);
-      setSummaryError(message);
     } finally {
       setIsSummarizing(false);
     }
   };
 
   const handleAiRefine = async () => {
-    if (
-      !hasExtractiveDraft ||
-      hasAiRefinedDraft ||
-      isReviewBusy ||
-      isConfirmed
-    ) {
-      return;
-    }
+    if (!hasExtractiveDraft || hasAiRefinedDraft || isReviewBusy || isConfirmed) return;
 
     setIsRefining(true);
     setSummaryError(null);
@@ -165,15 +149,10 @@ export default function TestCallPage() {
       });
       const result = (await response.json()) as AiRefineApiResponse;
       if (!response.ok) {
-        throw new Error(
-          result.detail || result.error || `AI 정제 실패: ${response.status}`
-        );
+        throw new Error(result.detail || result.error || `AI 정제 실패: ${response.status}`);
       }
 
-      const nextContent =
-        typeof result.draft?.content === 'string'
-          ? result.draft.content.trim()
-          : '';
+      const nextContent = typeof result.draft?.content === 'string' ? result.draft.content.trim() : '';
       const nextStructured = result.draft?.structured ?? null;
       if (!nextContent || !nextStructured) {
         throw new Error('AI 정제 응답에 검토용 내용이 없습니다.');
@@ -187,9 +166,8 @@ export default function TestCallPage() {
         '생성형 AI 정제본을 새 버전으로 저장했습니다. 담당자가 내용을 검토·수정한 뒤 저장·확정해 주세요.'
       );
     } catch (refineError) {
-      const message = getErrorMessage(refineError);
+      setSummaryError(getErrorMessage(refineError));
       console.error('[TestCallPage] AI refine failed:', refineError);
-      setSummaryError(message);
     } finally {
       setIsRefining(false);
     }
@@ -210,19 +188,14 @@ export default function TestCallPage() {
       });
       const result = (await response.json()) as DraftMutationResponse;
       if (!response.ok) {
-        throw new Error(
-          result.detail || result.error || `수정본 저장 실패: ${response.status}`
-        );
+        throw new Error(result.detail || result.error || `수정본 저장 실패: ${response.status}`);
       }
 
       setReviewState('saved');
-      setReviewMessage(
-        '담당자 수정본을 새 버전으로 저장했습니다. 이전 버전은 보존됩니다.'
-      );
+      setReviewMessage('담당자 수정본을 새 버전으로 저장했습니다. 이전 버전은 보존됩니다.');
     } catch (saveError) {
-      const message = getErrorMessage(saveError);
+      setSummaryError(getErrorMessage(saveError));
       console.error('[TestCallPage] draft save failed:', saveError);
-      setSummaryError(message);
     } finally {
       setIsSaving(false);
     }
@@ -243,19 +216,16 @@ export default function TestCallPage() {
       });
       const result = (await response.json()) as DraftMutationResponse;
       if (!response.ok) {
-        throw new Error(
-          result.detail || result.error || `확정 처리 실패: ${response.status}`
-        );
+        throw new Error(result.detail || result.error || `확정 처리 실패: ${response.status}`);
       }
 
       setReviewState('confirmed');
       setReviewMessage(
-        '담당자 확정본으로 기록했습니다. 자동 제출·자동 처분은 수행하지 않습니다.'
+        '담당자 확정본으로 기록했습니다. 자동 제출·자동 처분은 수행하지 않습니다. 아래에서 품질평가를 저장할 수 있습니다.'
       );
     } catch (confirmError) {
-      const message = getErrorMessage(confirmError);
+      setSummaryError(getErrorMessage(confirmError));
       console.error('[TestCallPage] draft confirm failed:', confirmError);
-      setSummaryError(message);
     } finally {
       setIsConfirming(false);
     }
@@ -303,24 +273,16 @@ export default function TestCallPage() {
             onClick={() => void handleRecordingClick()}
             aria-pressed={isRecording}
           >
-            {isRecording
-              ? '녹음 중지'
-              : '녹음 시작 (마이크에 대고 말하기)'}
+            {isRecording ? '녹음 중지' : '녹음 시작 (마이크에 대고 말하기)'}
           </button>
 
           <div className="status-row" aria-live="polite">
             <span className={`status-badge ${isRecording ? 'active' : ''}`}>
               {isRecording ? '● 녹음 중' : '대기'}
             </span>
-            {isSending && (
-              <span className="status-badge sending">STT 처리 중</span>
-            )}
-            {completedCount > 0 && (
-              <span className="status-badge success">완료 {completedCount}건</span>
-            )}
-            {failedCount > 0 && (
-              <span className="status-badge error">실패 {failedCount}건</span>
-            )}
+            {isSending && <span className="status-badge sending">STT 처리 중</span>}
+            {completedCount > 0 && <span className="status-badge success">완료 {completedCount}건</span>}
+            {failedCount > 0 && <span className="status-badge error">실패 {failedCount}건</span>}
           </div>
         </div>
 
@@ -341,16 +303,11 @@ export default function TestCallPage() {
           </div>
 
           {chunks.length === 0 ? (
-            <div className="empty-result">
-              녹음을 시작하면 첫 번째 결과가 여기에 표시됩니다.
-            </div>
+            <div className="empty-result">녹음을 시작하면 첫 번째 결과가 여기에 표시됩니다.</div>
           ) : (
             <div className="chunk-list">
               {chunks.map((chunk) => (
-                <article
-                  key={chunk.chunkIndex}
-                  className={`chunk-item ${chunk.status}`}
-                >
+                <article key={chunk.chunkIndex} className={`chunk-item ${chunk.status}`}>
                   <header className="chunk-header">
                     <strong className="chunk-number">청크 {chunk.chunkIndex + 1}</strong>
                     <span className="chunk-time">
@@ -359,19 +316,12 @@ export default function TestCallPage() {
                       {formatSeconds(chunk.chunkEndMs)}
                     </span>
                   </header>
-
-                  {chunk.status === 'sending' && (
-                    <p className="chunk-placeholder">음성을 인식하고 있습니다…</p>
-                  )}
+                  {chunk.status === 'sending' && <p className="chunk-placeholder">음성을 인식하고 있습니다…</p>}
                   {chunk.status === 'success' && (
-                    <p className="chunk-text">
-                      {chunk.text.trim() || '(인식된 내용 없음)'}
-                    </p>
+                    <p className="chunk-text">{chunk.text.trim() || '(인식된 내용 없음)'}</p>
                   )}
                   {chunk.status === 'error' && (
-                    <p className="chunk-error">
-                      {chunk.error || 'STT 처리에 실패했습니다.'}
-                    </p>
+                    <p className="chunk-error">{chunk.error || 'STT 처리에 실패했습니다.'}</p>
                   )}
                 </article>
               ))}
@@ -408,13 +358,8 @@ export default function TestCallPage() {
               className="summary-button"
               onClick={() => void handleSummaryDraft()}
               disabled={
-                isRecording ||
-                isSending ||
-                isReviewBusy ||
-                completedCount === 0 ||
-                !hasRecognizedText ||
-                isConfirmed ||
-                hasAiRefinedDraft
+                isRecording || isSending || isReviewBusy || completedCount === 0 ||
+                !hasRecognizedText || isConfirmed || hasAiRefinedDraft
               }
             >
               {isSummarizing ? '요지 생성 중…' : '민원 요지 초안 생성'}
@@ -424,18 +369,9 @@ export default function TestCallPage() {
               type="button"
               className="summary-button ai-refine-button"
               onClick={() => void handleAiRefine()}
-              disabled={
-                !hasExtractiveDraft ||
-                hasAiRefinedDraft ||
-                isReviewBusy ||
-                isConfirmed
-              }
+              disabled={!hasExtractiveDraft || hasAiRefinedDraft || isReviewBusy || isConfirmed}
             >
-              {isRefining
-                ? 'AI 정제본 생성 중…'
-                : hasAiRefinedDraft
-                  ? 'AI 정제본 생성 완료'
-                  : 'AI 정제본 생성'}
+              {isRefining ? 'AI 정제본 생성 중…' : hasAiRefinedDraft ? 'AI 정제본 생성 완료' : 'AI 정제본 생성'}
             </button>
 
             <p className="summary-note">
@@ -451,27 +387,18 @@ export default function TestCallPage() {
             </div>
           )}
 
-          {reviewMessage && (
-            <div className="review-message" role="status">
-              {reviewMessage}
-            </div>
-          )}
+          {reviewMessage && <div className="review-message" role="status">{reviewMessage}</div>}
 
           {structuredSummary && (
             <div className="ai-structured-result" aria-label="AI 구조화 결과">
               <StructuredSection title="민원 요지" items={[structuredSummary.summary]} />
               <StructuredSection title="요청·문의" items={structuredSummary.requests} />
               <StructuredSection title="원문 확인 사실" items={structuredSummary.key_facts} />
-              <StructuredSection
-                title="추가 확인 필요"
-                items={structuredSummary.needs_confirmation}
-              />
+              <StructuredSection title="추가 확인 필요" items={structuredSummary.needs_confirmation} />
             </div>
           )}
 
-          <label className="draft-editor-label" htmlFor="draft-editor">
-            담당자 수정 영역
-          </label>
+          <label className="draft-editor-label" htmlFor="draft-editor">담당자 수정 영역</label>
           <textarea
             id="draft-editor"
             className="draft-editor"
@@ -498,17 +425,16 @@ export default function TestCallPage() {
               onClick={() => void handleConfirmDraft()}
               disabled={!hasDraftText || isReviewBusy || isConfirmed}
             >
-              {isConfirming
-                ? '확정 처리 중…'
-                : isConfirmed
-                  ? '담당자 확정 완료'
-                  : '담당자 확정'}
+              {isConfirming ? '확정 처리 중…' : isConfirmed ? '담당자 확정 완료' : '담당자 확정'}
             </button>
-            <span className={`review-state-badge ${reviewState}`}>
-              {formatReviewState(reviewState)}
-            </span>
+            <span className={`review-state-badge ${reviewState}`}>{formatReviewState(reviewState)}</span>
           </div>
         </section>
+
+        <QualityEvaluationPanel
+          sessionId={sessionId}
+          enabled={isConfirmed && hasAiRefinedDraft}
+        />
 
         {!isRecording && (chunks.length > 0 || error || summaryDraft) && (
           <div className="footer-actions">
@@ -533,9 +459,7 @@ function StructuredSection({ title, items }: { title: string; items: string[] })
       <strong>{title}</strong>
       {items.length > 0 ? (
         <ul>
-          {items.map((item, index) => (
-            <li key={`${title}-${index}`}>{item}</li>
-          ))}
+          {items.map((item, index) => <li key={`${title}-${index}`}>{item}</li>)}
         </ul>
       ) : (
         <p>없음</p>

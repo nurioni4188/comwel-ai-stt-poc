@@ -1,0 +1,139 @@
+.quality-evaluation-section {
+  padding-top: 6px;
+}
+
+.quality-locked-message {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  line-height: 1.6;
+}
+
+.quality-fieldset {
+  margin: 0 0 18px;
+  padding: 0;
+  border: 0;
+}
+
+.quality-fieldset legend {
+  margin-bottom: 10px;
+  color: #334155;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.quality-rating-grid,
+.quality-issue-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.quality-rating-option,
+.quality-checkbox-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 14px;
+  background: #fff;
+  border: 1px solid #dbe3ee;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.quality-rating-option:has(input:checked),
+.quality-checkbox-option:has(input:checked) {
+  border-color: #9db7dc;
+  background: #f4f8fd;
+}
+
+.quality-rating-option input,
+.quality-checkbox-option input {
+  margin-top: 3px;
+}
+
+.quality-rating-option span {
+  display: grid;
+  gap: 3px;
+}
+
+.quality-rating-option strong {
+  color: #1f2937;
+}
+
+.quality-rating-option small {
+  color: #64748b;
+  line-height: 1.45;
+}
+
+.quality-note-editor {
+  width: 100%;
+  min-height: 110px;
+  padding: 15px;
+  resize: vertical;
+  color: #1f2937;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  line-height: 1.65;
+}
+
+.quality-note-editor:focus {
+  outline: 3px solid rgba(36, 93, 168, 0.15);
+  border-color: #245da8;
+}
+
+.quality-note-editor:disabled {
+  color: #64748b;
+  background: #f8fafc;
+}
+
+.quality-metrics {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 16px;
+}
+
+.quality-metric-item {
+  display: grid;
+  gap: 5px;
+  padding: 13px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 11px;
+}
+
+.quality-metric-item span {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.quality-metric-item strong {
+  color: #172033;
+  overflow-wrap: anywhere;
+}
+
+.quality-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+@media (max-width: 640px) {
+  .quality-rating-grid,
+  .quality-issue-grid,
+  .quality-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .quality-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
