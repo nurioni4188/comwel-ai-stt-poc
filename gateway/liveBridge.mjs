@@ -63,18 +63,24 @@ async function postJson(url, body) {
 }
 
 async function transcribeTurn(session, pcm) {
-  const sessionId = randomUUID();
+  const live = session.live;
+  if (!live) throw new Error('live session is not initialized');
+
+  const chunkIndex = live.nextChunkIndex;
+  const chunkStartMs = chunkIndex * TURN_MS;
+  const chunkEndMs = chunkStartMs + TURN_MS;
   const wav = wavFromPcm16k(pcm);
   const payload = await postJson(endpoint('/api/stt-ingest'), {
-    sessionId,
-    chunkIndex: 0,
-    chunkStartMs: 0,
-    chunkEndMs: TURN_MS,
+    sessionId: live.sttSessionId,
+    chunkIndex,
+    chunkStartMs,
+    chunkEndMs,
     audioBase64: wav.toString('base64'),
     mimeType: 'audio/wav',
   });
   const text = String(payload.text || '').trim();
-  session.lastSttSessionId = sessionId;
+  live.sttStarted = true;
+  live.nextChunkIndex += 1;
   return text;
 }
 
@@ -83,6 +89,13 @@ async function answerTurn(session, question) {
     question,
     history: session.history.slice(-6),
   });
+}
+
+async function waitUntilIdle(live, maxWaitMs = HTTP_TIMEOUT_MS + 5000) {
+  const deadline = Date.now() + maxWaitMs;
+  while (live.processing && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 export function createLiveBridge({ onAnswer, onFallback, onError }) {
@@ -99,6 +112,11 @@ export function createLiveBridge({ onAnswer, onFallback, onError }) {
         chunks: [],
         bytes: 0,
         turns: 0,
+        sttSessionId: randomUUID(),
+        sttStarted: false,
+        sttCompletionStarted: false,
+        sttCompleted: false,
+        nextChunkIndex: 0,
       };
       session.history = [];
     },
@@ -125,6 +143,20 @@ export function createLiveBridge({ onAnswer, onFallback, onError }) {
       this.resetAudio(session);
     },
 
+    async completeSession(session) {
+      const live = session.live;
+      if (!live || !live.sttStarted || live.sttCompleted || live.sttCompletionStarted) return { completed: false };
+      live.sttCompletionStarted = true;
+      await waitUntilIdle(live);
+      try {
+        await postJson(endpoint('/api/stt-session-complete'), { sessionId: live.sttSessionId });
+        live.sttCompleted = true;
+        return { completed: true };
+      } finally {
+        live.sttCompletionStarted = false;
+      }
+    },
+
     async pushPcm(session, pcmChunk) {
       const live = session.live;
       if (!live || live.stopped || live.processing || live.speaking) return null;
@@ -134,8 +166,11 @@ export function createLiveBridge({ onAnswer, onFallback, onError }) {
       live.bytes += pcmChunk.length;
       if (live.bytes < TURN_BYTES) return null;
 
-      const pcm = Buffer.concat(live.chunks, live.bytes).subarray(0, TURN_BYTES);
-      this.resetAudio(session);
+      const joined = Buffer.concat(live.chunks, live.bytes);
+      const pcm = joined.subarray(0, TURN_BYTES);
+      const remainder = joined.subarray(TURN_BYTES);
+      live.chunks = remainder.length ? [remainder] : [];
+      live.bytes = remainder.length;
       live.processing = true;
       live.turns += 1;
 
@@ -180,5 +215,6 @@ export const LIVE_BRIDGE_CONFIG = {
   format: 'pcm_s16le',
   aiAppBaseUrlConfigured: Boolean(AI_APP_BASE_URL),
   rawAudioPersistence: false,
-  transcriptPersistence: 'stt-ingest stores recognized text in stt_poc transcript tables',
+  transcriptPersistence: 'one stt_poc call session per live phone call; recognized turn text is persisted by stt-ingest',
+  sttSessionCompletion: 'best-effort on phone session close via stt-session-complete',
 };
