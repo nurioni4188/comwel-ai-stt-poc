@@ -145,10 +145,11 @@ export function createLiveBridge({ onAnswer, onFallback, onError }) {
 
     async completeSession(session) {
       const live = session.live;
-      if (!live || !live.sttStarted || live.sttCompleted || live.sttCompletionStarted) return { completed: false };
+      if (!live || live.sttCompleted || live.sttCompletionStarted) return { completed: false };
       live.sttCompletionStarted = true;
-      await waitUntilIdle(live);
       try {
+        await waitUntilIdle(live);
+        if (!live.sttStarted) return { completed: false };
         await postJson(endpoint('/api/stt-session-complete'), { sessionId: live.sttSessionId });
         live.sttCompleted = true;
         return { completed: true };
