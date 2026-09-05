@@ -39,8 +39,9 @@ function endpoint(path) {
   return url.toString();
 }
 
-async function postJson(url, body) {
+async function postGatewayOperation(operation, payload) {
   if (!STT_INTERNAL_API_TOKEN) throw new Error('STT_INTERNAL_API_TOKEN is required for live gateway API calls');
+  const url = endpoint('/api/telephony-adapter');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
@@ -50,17 +51,17 @@ async function postJson(url, body) {
         'Content-Type': 'application/json',
         'x-stt-internal-token': STT_INTERNAL_API_TOKEN,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ gatewayOperation: operation, payload }),
       signal: controller.signal,
     });
     const text = await response.text();
-    let payload;
-    try { payload = text ? JSON.parse(text) : {}; }
-    catch { throw new Error(`invalid JSON from ${url}: ${text.slice(0, 300)}`); }
-    if (!response.ok) throw new Error(`${url} ${response.status}: ${payload.detail || payload.error || text.slice(0, 300)}`);
-    return payload;
+    let body;
+    try { body = text ? JSON.parse(text) : {}; }
+    catch { throw new Error(`invalid JSON from protected gateway upstream: ${text.slice(0, 300)}`); }
+    if (!response.ok) throw new Error(`protected gateway upstream ${response.status}: ${body.detail || body.error || text.slice(0, 300)}`);
+    return body;
   } catch (error) {
-    if (error?.name === 'AbortError') throw new Error(`upstream timeout after ${HTTP_TIMEOUT_MS}ms: ${url}`);
+    if (error?.name === 'AbortError') throw new Error(`upstream timeout after ${HTTP_TIMEOUT_MS}ms`);
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -70,16 +71,13 @@ async function postJson(url, body) {
 async function transcribeTurn(session, pcm) {
   const live = session.live;
   if (!live) throw new Error('live session is not initialized');
-
   const chunkIndex = live.nextChunkIndex;
-  const chunkStartMs = chunkIndex * TURN_MS;
-  const chunkEndMs = chunkStartMs + TURN_MS;
   const wav = wavFromPcm16k(pcm);
-  const payload = await postJson(endpoint('/api/gateway-stt-ingest'), {
+  const payload = await postGatewayOperation('stt_ingest', {
     sessionId: live.sttSessionId,
     chunkIndex,
-    chunkStartMs,
-    chunkEndMs,
+    chunkStartMs: chunkIndex * TURN_MS,
+    chunkEndMs: (chunkIndex + 1) * TURN_MS,
     audioBase64: wav.toString('base64'),
     mimeType: 'audio/wav',
   });
@@ -90,7 +88,7 @@ async function transcribeTurn(session, pcm) {
 }
 
 async function answerTurn(session, question) {
-  return postJson(endpoint('/api/gateway-stt-rag-answer'), {
+  return postGatewayOperation('rag_answer', {
     question,
     history: session.history.slice(-6),
   });
@@ -107,47 +105,31 @@ export function createLiveBridge({ onAnswer, onFallback, onError }) {
   return {
     turnMs: TURN_MS,
     targetBytes: TURN_BYTES,
-
     initSession(session) {
       session.live = {
-        enabled: true,
-        processing: false,
-        speaking: false,
-        stopped: false,
-        chunks: [],
-        bytes: 0,
-        turns: 0,
-        sttSessionId: randomUUID(),
-        sttStarted: false,
-        sttCompletionStarted: false,
-        sttCompleted: false,
-        nextChunkIndex: 0,
+        enabled: true, processing: false, speaking: false, stopped: false,
+        chunks: [], bytes: 0, turns: 0,
+        sttSessionId: randomUUID(), sttStarted: false,
+        sttCompletionStarted: false, sttCompleted: false, nextChunkIndex: 0,
       };
       session.history = [];
     },
-
     resetAudio(session) {
       if (!session.live) return;
       session.live.chunks = [];
       session.live.bytes = 0;
     },
-
-    markPlaybackStarted(session) {
-      if (session.live) session.live.speaking = true;
-    },
-
+    markPlaybackStarted(session) { if (session.live) session.live.speaking = true; },
     markPlaybackFinished(session) {
       if (!session.live) return;
       session.live.speaking = false;
       this.resetAudio(session);
     },
-
     stop(session) {
       if (!session.live) return;
       session.live.stopped = true;
       this.resetAudio(session);
     },
-
     async completeSession(session) {
       const live = session.live;
       if (!live || live.sttCompleted || live.sttCompletionStarted) return { completed: false };
@@ -155,19 +137,17 @@ export function createLiveBridge({ onAnswer, onFallback, onError }) {
       try {
         await waitUntilIdle(live);
         if (!live.sttStarted) return { completed: false };
-        await postJson(endpoint('/api/gateway-stt-session-complete'), { sessionId: live.sttSessionId });
+        await postGatewayOperation('session_complete', { sessionId: live.sttSessionId });
         live.sttCompleted = true;
         return { completed: true };
       } finally {
         live.sttCompletionStarted = false;
       }
     },
-
     async pushPcm(session, pcmChunk) {
       const live = session.live;
       if (!live || live.stopped || live.processing || live.speaking) return null;
       if (!Buffer.isBuffer(pcmChunk) || pcmChunk.length === 0) return null;
-
       live.chunks.push(pcmChunk);
       live.bytes += pcmChunk.length;
       if (live.bytes < TURN_BYTES) return null;
@@ -186,10 +166,8 @@ export function createLiveBridge({ onAnswer, onFallback, onError }) {
           await onFallback(session, '질문을 정확히 인식하지 못했습니다. 한 문장으로 다시 말씀해 주세요.', 'empty_stt');
           return { generated: false, reason: 'empty_stt' };
         }
-
         const rag = await answerTurn(session, question);
         session.history.push({ role: 'user', content: question });
-
         if (!rag.generated) {
           const fallback = String(rag.answer || '승인근거가 충분하지 않아 담당자 확인이 필요합니다.');
           session.history.push({ role: 'assistant', content: fallback });
@@ -197,7 +175,6 @@ export function createLiveBridge({ onAnswer, onFallback, onError }) {
           live.stopped = true;
           return { generated: false, question, reason: rag.reason };
         }
-
         const answer = String(rag.answer || '').trim();
         session.history.push({ role: 'assistant', content: answer });
         await onAnswer(session, answer, rag);
@@ -221,12 +198,9 @@ export const LIVE_BRIDGE_CONFIG = {
   format: 'pcm_s16le',
   aiAppBaseUrlConfigured: Boolean(AI_APP_BASE_URL && STT_INTERNAL_API_TOKEN),
   internalApiTokenConfigured: Boolean(STT_INTERNAL_API_TOKEN),
-  protectedApiPaths: [
-    '/api/gateway-stt-ingest',
-    '/api/gateway-stt-rag-answer',
-    '/api/gateway-stt-session-complete',
-  ],
+  protectedApiPath: '/api/telephony-adapter',
+  protectedOperations: ['stt_ingest', 'rag_answer', 'session_complete'],
   rawAudioPersistence: false,
-  transcriptPersistence: 'one stt_poc call session per live phone call; recognized turn text is persisted by protected gateway STT ingest',
-  sttSessionCompletion: 'best-effort on phone session close via protected gateway session-complete',
+  transcriptPersistence: 'one stt_poc call session per live phone call; recognized turn text is persisted by the protected telephony-adapter upstream',
+  sttSessionCompletion: 'best-effort on phone session close through protected telephony-adapter operation',
 };
