@@ -219,7 +219,7 @@ export const LIVE_BRIDGE_CONFIG = {
   sampleRate: SAMPLE_RATE,
   channels: 1,
   format: 'pcm_s16le',
-  aiAppBaseUrlConfigured: Boolean(AI_APP_BASE_URL),
+  aiAppBaseUrlConfigured: Boolean(AI_APP_BASE_URL && STT_INTERNAL_API_TOKEN),
   internalApiTokenConfigured: Boolean(STT_INTERNAL_API_TOKEN),
   protectedApiPaths: [
     '/api/gateway-stt-ingest',
