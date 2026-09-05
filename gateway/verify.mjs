@@ -9,6 +9,7 @@ import {
   TWILIO_AUDIO,
 } from './twilioAdapter.mjs';
 import { wavFromPcm16k } from './liveBridge.mjs';
+import { OPENAI_TTS_CONFIG } from './openaiTts.mjs';
 
 const authToken = 'test-auth-token';
 const publicUrl = 'wss://gateway.example.test/v1/media';
@@ -49,6 +50,12 @@ const mulaw = Buffer.alloc(160, 0xff);
 const pcm16k = mulaw8kToPcm16k(mulaw.toString('base64'));
 assert.equal(pcm16k.length, 640);
 
+assert.equal(OPENAI_TTS_CONFIG.responseFormat, 'pcm');
+assert.equal(OPENAI_TTS_CONFIG.pcmRate, 24000);
+assert.equal(OPENAI_TTS_CONFIG.sampleFormat, 'pcm_s16le');
+assert.equal(OPENAI_TTS_CONFIG.channels, 1);
+assert.ok(OPENAI_TTS_CONFIG.timeoutMs >= 3000 && OPENAI_TTS_CONFIG.timeoutMs <= 60000);
+
 const pcm24k = Buffer.alloc(480);
 const outboundMulaw = pcm24kToMulaw8k(pcm24k);
 assert.equal(outboundMulaw.length, 80);
@@ -68,6 +75,11 @@ assert.match(liveBridgeSource, /\/api\/stt-session-complete/);
 assert.match(liveBridgeSource, /const remainder = joined\.subarray\(TURN_BYTES\)/);
 assert.match(liveBridgeSource, /await waitUntilIdle\(live\)/);
 
+const ttsSource = readFileSync(new URL('./openaiTts.mjs', import.meta.url), 'utf8');
+assert.match(ttsSource, /AbortController/);
+assert.match(ttsSource, /response_format: 'pcm'/);
+assert.doesNotMatch(ttsSource, /OPENAI_TTS_PCM_RATE/);
+
 const serverSource = readFileSync(new URL('./server.mjs', import.meta.url), 'utf8');
 assert.match(serverSource, /GATEWAY_CONTROL_TOKEN/);
 assert.match(serverSource, /gateway_control_token_not_configured/);
@@ -77,4 +89,4 @@ assert.match(serverSource, /liveBridge\.completeSession\(session\)/);
 assert.doesNotMatch(serverSource, /session\.lastPcm16k\s*=/);
 assert.match(serverSource, /PUBLIC_MEDIA_WSS_URL must use wss:\/\//);
 
-console.log('PASS v0.15 gateway verification: Twilio signature/media contract, audio conversion, WAV framing, protected controls, STT session lifecycle');
+console.log('PASS v0.15 gateway verification: Twilio signature/media contract, audio conversion, WAV framing, protected controls, STT lifecycle, TTS PCM contract');
