@@ -24,6 +24,7 @@ Container는 Node.js 20 기반이며 `/health` HEALTHCHECK를 포함한다. 호�
    - `GATEWAY_CONTROL_TOKEN=<random secret>`
    - optional: `LIVE_TURN_MS=8000`
    - optional: `LIVE_HTTP_TIMEOUT_MS=20000`
+   - optional: `OPENAI_TTS_TIMEOUT_MS=30000`
 3. `GET https://<host>/health`에서 `version=v0.15.0`, `liveE2E.enabled=true`, `liveE2E.readiness.ready=true`를 확인한다.
 4. readiness의 모든 check가 `true`인지 확인한다. 비밀값 자체는 응답에 노출되지 않는다.
 5. `GET https://<host>/v1/twiml`이 동일한 WSS URL의 `<Connect><Stream>`을 반환하는지 확인한다.
@@ -32,6 +33,7 @@ Container는 Node.js 20 기반이며 `/health` HEALTHCHECK를 포함한다. 호�
 8. Twilio Voice Trial webhook을 `https://<host>/v1/twiml`로 설정한다.
 9. 검증된 Trial 전화에서 한 통을 걸고 `docs/v0.15.0-live-telephony-e2e.md`의 시험 시나리오를 수행한다.
 10. 문서의 합성·비식별 시험 문장만 사용한다. 기존 `/api/stt-ingest`는 Gateway 원시 오디오를 저장하지 않더라도 인식된 transcript text는 저장한다.
+11. 통화 종료 후 합성 시험 STT session이 `completed`이고 transcript chunk 인덱스가 연속인지 확인한다.
 
 ## 배포 전 로컬 검증
 
@@ -49,4 +51,4 @@ npm --prefix gateway run check
 
 ## 병합 원칙
 
-실제 전화 E2E, fallback, 보호 control endpoint까지 확인하기 전에는 PR #24를 Draft로 유지하고 `v0.15.0`을 main에 병합/태그하지 않는다.
+실제 전화 E2E, fallback, STT session 완료, 보호 control endpoint까지 확인하기 전에는 PR #24를 Draft로 유지하고 `v0.15.0`을 main에 병합/태그하지 않는다.
