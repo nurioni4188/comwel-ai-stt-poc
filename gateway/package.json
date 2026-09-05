@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check liveBridge.mjs && node --check twilioAdapter.mjs && node --check openaiTts.mjs"
+    "verify": "node verify.mjs",
+    "check": "node --check server.mjs && node --check liveBridge.mjs && node --check twilioAdapter.mjs && node --check openaiTts.mjs && node --check verify.mjs && node verify.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"
