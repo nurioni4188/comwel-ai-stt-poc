@@ -106,7 +106,14 @@ function closeSession(callId, reason = 'completed') {
   session.state = 'closed';
   session.closedAt = new Date().toISOString();
   session.reason = reason;
-  if (session.live) liveBridge.stop(session);
+  if (session.live) {
+    liveBridge.stop(session);
+    void liveBridge.completeSession(session)
+      .then((result) => {
+        if (result.completed) console.log('[live-e2e] STT session completed', { sessionId: session.id });
+      })
+      .catch((error) => console.error('[live-e2e] STT session completion failed', { sessionId: session.id, error: error instanceof Error ? error.message : String(error) }));
+  }
   sessions.delete(callId);
 }
 
@@ -332,6 +339,8 @@ const server = http.createServer(async (req, res) => {
             stopped: session.live.stopped,
             turns: session.live.turns,
             bufferedBytes: session.live.bytes,
+            sttChunks: session.live.nextChunkIndex,
+            sttCompleted: session.live.sttCompleted,
           } : null,
         })),
       });
@@ -385,10 +394,15 @@ server.listen(PORT, () => {
   console.log(`[media-gateway] v0.15.0 listening on :${PORT} provider=${PROVIDER} liveE2E=${LIVE_E2E_ENABLED}`);
 });
 
+let shuttingDown = false;
 function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   clearInterval(heartbeat);
   for (const ws of wss.clients) ws.close(1001, 'server_shutdown');
-  server.close(() => process.exit(0));
+  server.close(() => console.log('[media-gateway] HTTP server closed'));
+  const forceExit = setTimeout(() => process.exit(1), Math.max(10000, LIVE_BRIDGE_CONFIG.httpTimeoutMs + 6000));
+  forceExit.unref();
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
