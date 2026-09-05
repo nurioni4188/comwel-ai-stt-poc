@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { synthesizePcm, OPENAI_TTS_CONFIG } from './openaiTts.mjs';
 import { createLiveBridge, LIVE_BRIDGE_CONFIG } from './liveBridge.mjs';
@@ -17,14 +17,15 @@ const PORT = Number(process.env.PORT || 8787);
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS || 15000);
 const MAX_FRAME_BYTES = Number(process.env.MAX_FRAME_BYTES || 128 * 1024);
 const PROVIDER = process.env.TELEPHONY_PROVIDER || 'simulator';
-const PUBLIC_MEDIA_WSS_URL = process.env.PUBLIC_MEDIA_WSS_URL || '';
+const PUBLIC_MEDIA_WSS_URL = String(process.env.PUBLIC_MEDIA_WSS_URL || '').trim();
 const LIVE_E2E_ENABLED = String(process.env.LIVE_E2E_ENABLED || '').toLowerCase() === 'true';
+const GATEWAY_CONTROL_TOKEN = String(process.env.GATEWAY_CONTROL_TOKEN || '').trim();
 const INTERNAL_AUDIO = { codec: 'pcm_s16le', sampleRate: 16000, channels: 1 };
 
 const sessions = new Map();
 
 function json(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(body));
 }
 
@@ -46,6 +47,51 @@ function validateEnvelope(message) {
   const sequence = Number(message.sequence);
   if (!type || !callId || !Number.isInteger(sequence) || sequence < 0) throw new Error('type, callId, sequence are required');
   return { type, callId, sequence };
+}
+
+function safeEqualText(expected, actual) {
+  const left = Buffer.from(String(expected || ''));
+  const right = Buffer.from(String(actual || ''));
+  return left.length > 0 && left.length === right.length && timingSafeEqual(left, right);
+}
+
+function controlTokenFrom(req) {
+  const authorization = String(req.headers.authorization || '').trim();
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  return bearer || String(req.headers['x-gateway-control-token'] || '').trim();
+}
+
+function requireControl(req, res) {
+  if (!GATEWAY_CONTROL_TOKEN) {
+    json(res, 503, { ok: false, error: 'gateway_control_token_not_configured' });
+    return false;
+  }
+  if (!safeEqualText(GATEWAY_CONTROL_TOKEN, controlTokenFrom(req))) {
+    json(res, 401, { ok: false, error: 'unauthorized' });
+    return false;
+  }
+  return true;
+}
+
+function publicMediaUrl() {
+  if (!PUBLIC_MEDIA_WSS_URL) throw new Error('PUBLIC_MEDIA_WSS_URL_not_configured');
+  const url = new URL(PUBLIC_MEDIA_WSS_URL);
+  if (url.protocol !== 'wss:') throw new Error('PUBLIC_MEDIA_WSS_URL must use wss://');
+  if (url.search || url.hash) throw new Error('PUBLIC_MEDIA_WSS_URL must not contain query or fragment');
+  return url.toString();
+}
+
+function liveReadiness() {
+  const checks = {
+    providerTwilio: PROVIDER === 'twilio',
+    liveE2EEnabled: LIVE_E2E_ENABLED,
+    twilioAuthToken: Boolean(process.env.TWILIO_AUTH_TOKEN),
+    publicMediaWssUrl: Boolean(PUBLIC_MEDIA_WSS_URL),
+    openAiApiKey: Boolean(process.env.OPENAI_API_KEY),
+    aiAppBaseUrl: Boolean(LIVE_BRIDGE_CONFIG.aiAppBaseUrlConfigured),
+    gatewayControlToken: Boolean(GATEWAY_CONTROL_TOKEN),
+  };
+  return { ready: Object.values(checks).every(Boolean), checks };
 }
 
 function sessionFor(callId) {
@@ -143,30 +189,35 @@ async function sendServerTts(callId, text) {
   const normalizedText = String(text || '').trim();
   if (!normalizedText) throw new Error('TTS text is required');
 
-  const pcm24k = await synthesizePcm(normalizedText);
-  const mulaw8k = pcm24kToMulaw8k(pcm24k);
   if (session.live) liveBridge.markPlaybackStarted(session);
-  session.ws.send(twilioMediaMessage(session.streamId, mulaw8k));
-  const markName = `tts-${Date.now()}`;
-  session.lastMarkName = markName;
-  session.ws.send(twilioMarkMessage(session.streamId, markName));
-  session.outboundFrames += 1;
-  return { markName, bytes: mulaw8k.length, format: TWILIO_AUDIO };
+  try {
+    const pcm24k = await synthesizePcm(normalizedText);
+    const mulaw8k = pcm24kToMulaw8k(pcm24k);
+    session.ws.send(twilioMediaMessage(session.streamId, mulaw8k));
+    const markName = `tts-${Date.now()}`;
+    session.lastMarkName = markName;
+    session.ws.send(twilioMarkMessage(session.streamId, markName));
+    session.outboundFrames += 1;
+    return { markName, bytes: mulaw8k.length, format: TWILIO_AUDIO };
+  } catch (error) {
+    if (session.live) liveBridge.markPlaybackFinished(session);
+    throw error;
+  }
 }
 
 const liveBridge = createLiveBridge({
   onAnswer: async (session, answer) => {
-    console.log('[live-e2e] approved answer', { callId: session.callId, chars: answer.length });
+    console.log('[live-e2e] approved answer', { sessionId: session.id, chars: answer.length });
     await sendServerTts(session.callId, answer);
   },
   onFallback: async (session, text, reason) => {
-    console.log('[live-e2e] fallback', { callId: session.callId, reason });
+    console.log('[live-e2e] fallback', { sessionId: session.id, reason });
     await sendServerTts(session.callId, text);
   },
   onError: async (session, error) => {
-    console.error('[live-e2e] bridge error', { callId: session.callId, error });
+    console.error('[live-e2e] bridge error', { sessionId: session.id, error: error instanceof Error ? error.message : String(error) });
     try { await sendServerTts(session.callId, '현재 자동상담 연결에 문제가 있어 담당자 확인이 필요합니다.'); }
-    catch (ttsError) { console.error('[live-e2e] error prompt TTS failed', ttsError); }
+    catch (ttsError) { console.error('[live-e2e] error prompt TTS failed', ttsError instanceof Error ? ttsError.message : String(ttsError)); }
   },
 });
 
@@ -183,7 +234,7 @@ async function handleTwilioMessage(ws, raw) {
       providerCallId: normalized.providerCallId,
       streamId: normalized.streamId,
     });
-    console.log('[live-e2e] call started', { callId: session.callId, providerCallId: session.providerCallId, live: Boolean(session.live) });
+    console.log('[live-e2e] call started', { sessionId: session.id, live: Boolean(session.live) });
     if (session.live) await sendServerTts(session.callId, '안녕하세요. 근로복지공단 자동 음성상담 시험 서비스입니다. 궁금한 사항을 한 문장으로 말씀해 주세요.');
     return;
   }
@@ -202,7 +253,6 @@ async function handleTwilioMessage(ws, raw) {
 
   if (normalized.kind === 'audio.inbound') {
     session.inboundFrames += 1;
-    session.lastPcm16k = normalized.pcm16k;
     if (session.live) await liveBridge.pushPcm(session, normalized.pcm16k);
     return;
   }
@@ -218,7 +268,10 @@ async function handleTwilioMessage(ws, raw) {
 
 const server = http.createServer(async (req, res) => {
   try {
-    if (req.url === '/health') {
+    const requestUrl = new URL(req.url || '/', 'http://gateway.local');
+    const pathname = requestUrl.pathname;
+
+    if (pathname === '/health') {
       json(res, 200, {
         ok: true,
         version: 'v0.15.0',
@@ -227,42 +280,50 @@ const server = http.createServer(async (req, res) => {
         activeSessions: sessions.size,
         internalAudio: INTERNAL_AUDIO,
         serverTts: { ...OPENAI_TTS_CONFIG, enabled: Boolean(process.env.OPENAI_API_KEY) },
-        liveE2E: { ...LIVE_BRIDGE_CONFIG, enabled: LIVE_E2E_ENABLED },
+        liveE2E: { ...LIVE_BRIDGE_CONFIG, enabled: LIVE_E2E_ENABLED, readiness: liveReadiness() },
+        controlPlane: { protected: true, configured: Boolean(GATEWAY_CONTROL_TOKEN) },
       });
       return;
     }
 
-    if (req.url === '/v1/twiml') {
-      if (!PUBLIC_MEDIA_WSS_URL) { json(res, 503, { error: 'PUBLIC_MEDIA_WSS_URL_not_configured' }); return; }
-      res.writeHead(200, { 'Content-Type': 'text/xml; charset=utf-8' });
-      res.end(`<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="${PUBLIC_MEDIA_WSS_URL}" /></Connect></Response>`);
+    if (pathname === '/v1/twiml') {
+      const streamUrl = publicMediaUrl();
+      res.writeHead(200, { 'Content-Type': 'text/xml; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(`<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="${streamUrl}" /></Connect></Response>`);
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/v1/tts') {
+    if (req.method === 'POST' && pathname === '/v1/tts') {
+      if (!requireControl(req, res)) return;
       const body = await readJson(req);
       const result = await sendServerTts(String(body.callId || ''), String(body.text || ''));
       json(res, 200, { ok: true, ...result });
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/v1/clear') {
+    if (req.method === 'POST' && pathname === '/v1/clear') {
+      if (!requireControl(req, res)) return;
       const body = await readJson(req);
       const session = sessionFor(String(body.callId || ''));
       if (session.provider !== 'twilio') throw new Error('clear provider playback requires twilio mode');
       session.ws.send(twilioClearMessage(session.streamId));
+      session.lastMarkName = null;
       if (session.live) liveBridge.markPlaybackFinished(session);
       json(res, 200, { ok: true });
       return;
     }
 
-    if (req.url === '/v1/sessions') {
+    if (req.method === 'GET' && pathname === '/v1/sessions') {
+      if (!requireControl(req, res)) return;
       json(res, 200, {
         ok: true,
         sessions: [...sessions.values()].map((session) => ({
+          sessionId: session.id,
           callId: session.callId,
           providerCallId: session.providerCallId,
           state: session.state,
+          startedAt: session.startedAt,
+          lastSeenAt: new Date(session.lastSeenAt).toISOString(),
           inboundFrames: session.inboundFrames,
           outboundFrames: session.outboundFrames,
           live: session.live ? {
@@ -301,7 +362,7 @@ wss.on('connection', (ws, req) => {
   ws.on('pong', () => { ws.isAlive = true; });
   ws.on('message', (raw) => {
     if (PROVIDER === 'twilio') {
-      void handleTwilioMessage(ws, raw).catch((error) => console.error('[media-gateway] provider message error', error));
+      void handleTwilioMessage(ws, raw).catch((error) => console.error('[media-gateway] provider message error', error instanceof Error ? error.message : String(error)));
     } else {
       try { handleSimulatorMessage(ws, raw); }
       catch (error) { send(ws, { type: 'gateway.error', error: error instanceof Error ? error.message : String(error) }); }
