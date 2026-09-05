@@ -71,9 +71,29 @@ assert.equal(wav.readUInt32LE(40), 320);
 const liveBridgeSource = readFileSync(new URL('./liveBridge.mjs', import.meta.url), 'utf8');
 assert.match(liveBridgeSource, /sttSessionId: randomUUID\(\)/);
 assert.match(liveBridgeSource, /nextChunkIndex/);
-assert.match(liveBridgeSource, /\/api\/stt-session-complete/);
+assert.match(liveBridgeSource, /\/api\/gateway-stt-ingest/);
+assert.match(liveBridgeSource, /\/api\/gateway-stt-rag-answer/);
+assert.match(liveBridgeSource, /\/api\/gateway-stt-session-complete/);
+assert.match(liveBridgeSource, /x-stt-internal-token/);
+assert.match(liveBridgeSource, /STT_INTERNAL_API_TOKEN/);
 assert.match(liveBridgeSource, /const remainder = joined\.subarray\(TURN_BYTES\)/);
 assert.match(liveBridgeSource, /await waitUntilIdle\(live\)/);
+
+const gatewayAuthSource = readFileSync(new URL('../api/_gatewayAuth.ts', import.meta.url), 'utf8');
+assert.match(gatewayAuthSource, /timingSafeEqual/);
+assert.match(gatewayAuthSource, /STT_INTERNAL_API_TOKEN/);
+assert.match(gatewayAuthSource, /x-stt-internal-token/);
+assert.match(gatewayAuthSource, /status\(401\)/);
+assert.match(gatewayAuthSource, /status\(503\)/);
+
+for (const fileName of [
+  'gateway-stt-ingest.ts',
+  'gateway-stt-rag-answer.ts',
+  'gateway-stt-session-complete.ts',
+]) {
+  const wrapperSource = readFileSync(new URL(`../api/${fileName}`, import.meta.url), 'utf8');
+  assert.match(wrapperSource, /requireGatewayInternalAuth/);
+}
 
 const ttsSource = readFileSync(new URL('./openaiTts.mjs', import.meta.url), 'utf8');
 assert.match(ttsSource, /AbortController/);
@@ -89,4 +109,4 @@ assert.match(serverSource, /liveBridge\.completeSession\(session\)/);
 assert.doesNotMatch(serverSource, /session\.lastPcm16k\s*=/);
 assert.match(serverSource, /PUBLIC_MEDIA_WSS_URL must use wss:\/\//);
 
-console.log('PASS v0.15 gateway verification: Twilio signature/media contract, audio conversion, WAV framing, protected controls, STT lifecycle, TTS PCM contract');
+console.log('PASS v0.15 gateway verification: Twilio contract, audio framing, protected controls, protected STT/RAG upstream, STT lifecycle, TTS PCM contract');
