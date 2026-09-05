@@ -10,6 +10,8 @@ const MAX_AUDIO_BYTES = 2 * 1024 * 1024;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+type SttSupabaseClient = SupabaseClient<any, any, any, any, any>;
+
 interface IngestRequestBody {
   sessionId: string;
   chunkIndex: number;
@@ -138,7 +140,7 @@ function getEnvironmentVariables(): EnvironmentVariables {
 function createSupabaseClient(
   supabaseUrl: string,
   serviceRoleKey: string
-): SupabaseClient {
+): SttSupabaseClient {
   return createClient(supabaseUrl, serviceRoleKey, {
     db: { schema: STT_SCHEMA },
     auth: {
@@ -146,7 +148,7 @@ function createSupabaseClient(
       persistSession: false,
       detectSessionInUrl: false,
     },
-  });
+  }) as SttSupabaseClient;
 }
 
 function parseRequestBody(rawBody: unknown): IngestRequestBody {
@@ -225,7 +227,7 @@ function decodeAudioBase64(audioBase64: string): Buffer {
 }
 
 async function ensureCallSession(
-  supabase: SupabaseClient,
+  supabase: SttSupabaseClient,
   sessionId: string
 ): Promise<void> {
   const { error } = await supabase.from('call_sessions').upsert(
@@ -239,7 +241,7 @@ async function ensureCallSession(
 }
 
 async function saveTranscriptChunk(
-  supabase: SupabaseClient,
+  supabase: SttSupabaseClient,
   input: {
     sessionId: string;
     chunkIndex: number;
@@ -287,7 +289,7 @@ async function callClovaSpeech(input: {
       'X-CLOVASPEECH-API-KEY': input.secret,
       'Content-Type': 'application/octet-stream',
     },
-    body: input.audioBuffer,
+    body: new Uint8Array(input.audioBuffer),
   });
 
   const responseText = await response.text();

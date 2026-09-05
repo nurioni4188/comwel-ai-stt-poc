@@ -25,6 +25,22 @@ function encodeMuLawSample(sample) {
   return (~(sign | (exponent << 4) | mantissa)) & 0xff;
 }
 
+function signatureFor(authToken, url) {
+  return crypto.createHmac('sha1', authToken).update(url, 'utf8').digest('base64');
+}
+
+function safeEqualText(leftText, rightText) {
+  const left = Buffer.from(leftText);
+  const right = Buffer.from(rightText);
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function streamIdFrom(message, nested) {
+  const value = String(nested?.streamSid || message?.streamSid || '').trim();
+  if (!value) throw new Error('Twilio streamSid is required');
+  return value;
+}
+
 export function mulaw8kToPcm16k(payloadBase64) {
   const input = Buffer.from(payloadBase64, 'base64');
   const output = Buffer.allocUnsafe(input.length * 4);
@@ -54,10 +70,12 @@ export function validateTwilioUpgrade({ authToken, signature, publicUrl }) {
   if (!authToken) throw new Error('TWILIO_AUTH_TOKEN is required in twilio mode');
   if (!signature) throw new Error('X-Twilio-Signature is required in twilio mode');
   if (!publicUrl) throw new Error('PUBLIC_MEDIA_WSS_URL is required in twilio mode');
-  const expected = crypto.createHmac('sha1', authToken).update(publicUrl, 'utf8').digest('base64');
-  const left = Buffer.from(expected);
-  const right = Buffer.from(signature);
-  return left.length === right.length && crypto.timingSafeEqual(left, right);
+
+  const candidates = new Set([publicUrl]);
+  if (publicUrl.endsWith('/')) candidates.add(publicUrl.slice(0, -1));
+  else candidates.add(`${publicUrl}/`);
+
+  return [...candidates].some((candidate) => safeEqualText(signatureFor(authToken, candidate), signature));
 }
 
 export function normalizeTwilioMessage(message) {
@@ -66,12 +84,23 @@ export function normalizeTwilioMessage(message) {
 
   if (event === 'start') {
     const start = message.start || {};
-    const streamId = String(start.streamSid || message.streamSid || '');
+    const streamId = streamIdFrom(message, start);
+    const providerCallId = String(start.callSid || '').trim();
+    if (!providerCallId) throw new Error('Twilio callSid is required');
+
+    const mediaFormat = start.mediaFormat || {};
+    const encoding = String(mediaFormat.encoding || 'audio/x-mulaw');
+    const sampleRate = Number(mediaFormat.sampleRate || 8000);
+    const channels = Number(mediaFormat.channels || 1);
+    if (encoding !== 'audio/x-mulaw' || sampleRate !== 8000 || channels !== 1) {
+      throw new Error(`unsupported Twilio media format: ${encoding}/${sampleRate}/${channels}`);
+    }
+
     return {
       kind: 'call.started',
       callId: streamId,
       streamId,
-      providerCallId: String(start.callSid || ''),
+      providerCallId,
       sequence: Number(message.sequenceNumber || 1),
       providerAudio: TWILIO_AUDIO,
     };
@@ -80,7 +109,7 @@ export function normalizeTwilioMessage(message) {
   if (event === 'media') {
     const payload = String(message.media?.payload || '');
     if (!payload) throw new Error('Twilio media payload is required');
-    const streamId = String(message.streamSid || '');
+    const streamId = streamIdFrom(message);
     return {
       kind: 'audio.inbound',
       callId: streamId,
@@ -92,18 +121,20 @@ export function normalizeTwilioMessage(message) {
   }
 
   if (event === 'dtmf') {
-    const streamId = String(message.streamSid || '');
+    const streamId = streamIdFrom(message);
+    const digit = String(message.dtmf?.digit || '');
+    if (!/^[0-9*#]$/.test(digit)) throw new Error('invalid Twilio DTMF digit');
     return {
       kind: 'dtmf.received',
       callId: streamId,
       streamId,
       sequence: Number(message.sequenceNumber || 0),
-      digit: String(message.dtmf?.digit || ''),
+      digit,
     };
   }
 
   if (event === 'mark') {
-    const streamId = String(message.streamSid || '');
+    const streamId = streamIdFrom(message);
     return {
       kind: 'provider.mark',
       callId: streamId,
@@ -114,7 +145,7 @@ export function normalizeTwilioMessage(message) {
   }
 
   if (event === 'stop') {
-    const streamId = String(message.streamSid || '');
+    const streamId = streamIdFrom(message);
     return {
       kind: 'call.stopped',
       callId: streamId,

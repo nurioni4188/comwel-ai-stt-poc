@@ -1,7 +1,8 @@
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { synthesizePcm, OPENAI_TTS_CONFIG } from './openaiTts.mjs';
+import { createLiveBridge, LIVE_BRIDGE_CONFIG } from './liveBridge.mjs';
 import {
   normalizeTwilioMessage,
   pcm24kToMulaw8k,
@@ -16,13 +17,15 @@ const PORT = Number(process.env.PORT || 8787);
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS || 15000);
 const MAX_FRAME_BYTES = Number(process.env.MAX_FRAME_BYTES || 128 * 1024);
 const PROVIDER = process.env.TELEPHONY_PROVIDER || 'simulator';
-const PUBLIC_MEDIA_WSS_URL = process.env.PUBLIC_MEDIA_WSS_URL || '';
+const PUBLIC_MEDIA_WSS_URL = String(process.env.PUBLIC_MEDIA_WSS_URL || '').trim();
+const LIVE_E2E_ENABLED = String(process.env.LIVE_E2E_ENABLED || '').toLowerCase() === 'true';
+const GATEWAY_CONTROL_TOKEN = String(process.env.GATEWAY_CONTROL_TOKEN || '').trim();
 const INTERNAL_AUDIO = { codec: 'pcm_s16le', sampleRate: 16000, channels: 1 };
 
 const sessions = new Map();
 
 function json(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(body));
 }
 
@@ -46,6 +49,51 @@ function validateEnvelope(message) {
   return { type, callId, sequence };
 }
 
+function safeEqualText(expected, actual) {
+  const left = Buffer.from(String(expected || ''));
+  const right = Buffer.from(String(actual || ''));
+  return left.length > 0 && left.length === right.length && timingSafeEqual(left, right);
+}
+
+function controlTokenFrom(req) {
+  const authorization = String(req.headers.authorization || '').trim();
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  return bearer || String(req.headers['x-gateway-control-token'] || '').trim();
+}
+
+function requireControl(req, res) {
+  if (!GATEWAY_CONTROL_TOKEN) {
+    json(res, 503, { ok: false, error: 'gateway_control_token_not_configured' });
+    return false;
+  }
+  if (!safeEqualText(GATEWAY_CONTROL_TOKEN, controlTokenFrom(req))) {
+    json(res, 401, { ok: false, error: 'unauthorized' });
+    return false;
+  }
+  return true;
+}
+
+function publicMediaUrl() {
+  if (!PUBLIC_MEDIA_WSS_URL) throw new Error('PUBLIC_MEDIA_WSS_URL_not_configured');
+  const url = new URL(PUBLIC_MEDIA_WSS_URL);
+  if (url.protocol !== 'wss:') throw new Error('PUBLIC_MEDIA_WSS_URL must use wss://');
+  if (url.search || url.hash) throw new Error('PUBLIC_MEDIA_WSS_URL must not contain query or fragment');
+  return url.toString();
+}
+
+function liveReadiness() {
+  const checks = {
+    providerTwilio: PROVIDER === 'twilio',
+    liveE2EEnabled: LIVE_E2E_ENABLED,
+    twilioAuthToken: Boolean(process.env.TWILIO_AUTH_TOKEN),
+    publicMediaWssUrl: Boolean(PUBLIC_MEDIA_WSS_URL),
+    openAiApiKey: Boolean(process.env.OPENAI_API_KEY),
+    aiAppBaseUrl: Boolean(LIVE_BRIDGE_CONFIG.aiAppBaseUrlConfigured),
+    gatewayControlToken: Boolean(GATEWAY_CONTROL_TOKEN),
+  };
+  return { ready: Object.values(checks).every(Boolean), checks };
+}
+
 function sessionFor(callId) {
   const session = sessions.get(callId);
   if (!session) throw new Error('unknown callId');
@@ -58,13 +106,21 @@ function closeSession(callId, reason = 'completed') {
   session.state = 'closed';
   session.closedAt = new Date().toISOString();
   session.reason = reason;
+  if (session.live) {
+    liveBridge.stop(session);
+    void liveBridge.completeSession(session)
+      .then((result) => {
+        if (result.completed) console.log('[live-e2e] STT session completed', { sessionId: session.id });
+      })
+      .catch((error) => console.error('[live-e2e] STT session completion failed', { sessionId: session.id, error: error instanceof Error ? error.message : String(error) }));
+  }
   sessions.delete(callId);
 }
 
 function startSession({ callId, sequence, ws, providerCallId, streamId }) {
   if (!callId) throw new Error('callId is required');
   if (sessions.has(callId)) throw new Error('call already started');
-  sessions.set(callId, {
+  const session = {
     id: randomUUID(),
     callId,
     providerCallId: providerCallId || null,
@@ -77,7 +133,11 @@ function startSession({ callId, sequence, ws, providerCallId, streamId }) {
     inboundFrames: 0,
     outboundFrames: 0,
     lastSeenAt: Date.now(),
-  });
+    lastMarkName: null,
+  };
+  if (LIVE_E2E_ENABLED && PROVIDER === 'twilio') liveBridge.initSession(session);
+  sessions.set(callId, session);
+  return session;
 }
 
 function handleSimulatorMessage(ws, raw) {
@@ -129,19 +189,60 @@ function handleSimulatorMessage(ws, raw) {
   throw new Error(`unsupported message type: ${type}`);
 }
 
-function handleTwilioMessage(ws, raw) {
+async function sendServerTts(callId, text) {
+  const session = sessionFor(callId);
+  if (session.provider !== 'twilio') throw new Error('server TTS provider playback requires twilio mode');
+  if (!session.ws || session.ws.readyState !== WebSocket.OPEN) throw new Error('provider socket is not open');
+  const normalizedText = String(text || '').trim();
+  if (!normalizedText) throw new Error('TTS text is required');
+
+  if (session.live) liveBridge.markPlaybackStarted(session);
+  try {
+    const pcm24k = await synthesizePcm(normalizedText);
+    const mulaw8k = pcm24kToMulaw8k(pcm24k);
+    session.ws.send(twilioMediaMessage(session.streamId, mulaw8k));
+    const markName = `tts-${Date.now()}`;
+    session.lastMarkName = markName;
+    session.ws.send(twilioMarkMessage(session.streamId, markName));
+    session.outboundFrames += 1;
+    return { markName, bytes: mulaw8k.length, format: TWILIO_AUDIO };
+  } catch (error) {
+    if (session.live) liveBridge.markPlaybackFinished(session);
+    throw error;
+  }
+}
+
+const liveBridge = createLiveBridge({
+  onAnswer: async (session, answer) => {
+    console.log('[live-e2e] approved answer', { sessionId: session.id, chars: answer.length });
+    await sendServerTts(session.callId, answer);
+  },
+  onFallback: async (session, text, reason) => {
+    console.log('[live-e2e] fallback', { sessionId: session.id, reason });
+    await sendServerTts(session.callId, text);
+  },
+  onError: async (session, error) => {
+    console.error('[live-e2e] bridge error', { sessionId: session.id, error: error instanceof Error ? error.message : String(error) });
+    try { await sendServerTts(session.callId, '현재 자동상담 연결에 문제가 있어 담당자 확인이 필요합니다.'); }
+    catch (ttsError) { console.error('[live-e2e] error prompt TTS failed', ttsError instanceof Error ? ttsError.message : String(ttsError)); }
+  },
+});
+
+async function handleTwilioMessage(ws, raw) {
   if (Buffer.byteLength(raw) > MAX_FRAME_BYTES) throw new Error('frame exceeds MAX_FRAME_BYTES');
   const normalized = normalizeTwilioMessage(JSON.parse(raw.toString('utf8')));
-  if (normalized.kind === 'provider.connected' || normalized.kind === 'provider.mark') return;
+  if (normalized.kind === 'provider.connected') return;
 
   if (normalized.kind === 'call.started') {
-    startSession({
+    const session = startSession({
       callId: normalized.callId,
       sequence: normalized.sequence,
       ws,
       providerCallId: normalized.providerCallId,
       streamId: normalized.streamId,
     });
+    console.log('[live-e2e] call started', { sessionId: session.id, live: Boolean(session.live) });
+    if (session.live) await sendServerTts(session.callId, '안녕하세요. 근로복지공단 자동 음성상담 시험 서비스입니다. 궁금한 사항을 한 문장으로 말씀해 주세요.');
     return;
   }
 
@@ -149,9 +250,17 @@ function handleTwilioMessage(ws, raw) {
   session.lastSeenAt = Date.now();
   if (Number.isInteger(normalized.sequence) && normalized.sequence > session.lastSequence) session.lastSequence = normalized.sequence;
 
+  if (normalized.kind === 'provider.mark') {
+    if (session.live && (!session.lastMarkName || normalized.name === session.lastMarkName)) {
+      liveBridge.markPlaybackFinished(session);
+      session.lastMarkName = null;
+    }
+    return;
+  }
+
   if (normalized.kind === 'audio.inbound') {
     session.inboundFrames += 1;
-    session.lastPcm16k = normalized.pcm16k;
+    if (session.live) await liveBridge.pushPcm(session, normalized.pcm16k);
     return;
   }
   if (normalized.kind === 'dtmf.received') {
@@ -164,55 +273,77 @@ function handleTwilioMessage(ws, raw) {
   }
 }
 
-async function sendServerTts(callId, text) {
-  const session = sessionFor(callId);
-  if (session.provider !== 'twilio') throw new Error('server TTS provider playback requires twilio mode in v0.14');
-  if (!session.ws || session.ws.readyState !== WebSocket.OPEN) throw new Error('provider socket is not open');
-
-  const pcm24k = await synthesizePcm(text);
-  const mulaw8k = pcm24kToMulaw8k(pcm24k);
-  session.ws.send(twilioMediaMessage(session.streamId, mulaw8k));
-  const markName = `tts-${Date.now()}`;
-  session.ws.send(twilioMarkMessage(session.streamId, markName));
-  session.outboundFrames += 1;
-  return { markName, bytes: mulaw8k.length, format: TWILIO_AUDIO };
-}
-
 const server = http.createServer(async (req, res) => {
   try {
-    if (req.url === '/health') {
+    const requestUrl = new URL(req.url || '/', 'http://gateway.local');
+    const pathname = requestUrl.pathname;
+
+    if (pathname === '/health') {
       json(res, 200, {
         ok: true,
-        version: 'v0.14.0',
+        version: 'v0.15.0',
         service: 'media-gateway',
         provider: PROVIDER,
         activeSessions: sessions.size,
         internalAudio: INTERNAL_AUDIO,
         serverTts: { ...OPENAI_TTS_CONFIG, enabled: Boolean(process.env.OPENAI_API_KEY) },
+        liveE2E: { ...LIVE_BRIDGE_CONFIG, enabled: LIVE_E2E_ENABLED, readiness: liveReadiness() },
+        controlPlane: { protected: true, configured: Boolean(GATEWAY_CONTROL_TOKEN) },
       });
       return;
     }
 
-    if (req.url === '/v1/twiml') {
-      if (!PUBLIC_MEDIA_WSS_URL) { json(res, 503, { error: 'PUBLIC_MEDIA_WSS_URL_not_configured' }); return; }
-      res.writeHead(200, { 'Content-Type': 'text/xml; charset=utf-8' });
-      res.end(`<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="${PUBLIC_MEDIA_WSS_URL}" /></Connect></Response>`);
+    if (pathname === '/v1/twiml') {
+      const streamUrl = publicMediaUrl();
+      res.writeHead(200, { 'Content-Type': 'text/xml; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(`<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="${streamUrl}" /></Connect></Response>`);
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/v1/tts') {
+    if (req.method === 'POST' && pathname === '/v1/tts') {
+      if (!requireControl(req, res)) return;
       const body = await readJson(req);
       const result = await sendServerTts(String(body.callId || ''), String(body.text || ''));
       json(res, 200, { ok: true, ...result });
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/v1/clear') {
+    if (req.method === 'POST' && pathname === '/v1/clear') {
+      if (!requireControl(req, res)) return;
       const body = await readJson(req);
       const session = sessionFor(String(body.callId || ''));
       if (session.provider !== 'twilio') throw new Error('clear provider playback requires twilio mode');
       session.ws.send(twilioClearMessage(session.streamId));
+      session.lastMarkName = null;
+      if (session.live) liveBridge.markPlaybackFinished(session);
       json(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/v1/sessions') {
+      if (!requireControl(req, res)) return;
+      json(res, 200, {
+        ok: true,
+        sessions: [...sessions.values()].map((session) => ({
+          sessionId: session.id,
+          callId: session.callId,
+          providerCallId: session.providerCallId,
+          state: session.state,
+          startedAt: session.startedAt,
+          lastSeenAt: new Date(session.lastSeenAt).toISOString(),
+          inboundFrames: session.inboundFrames,
+          outboundFrames: session.outboundFrames,
+          live: session.live ? {
+            processing: session.live.processing,
+            speaking: session.live.speaking,
+            stopped: session.live.stopped,
+            turns: session.live.turns,
+            bufferedBytes: session.live.bytes,
+            sttChunks: session.live.nextChunkIndex,
+            sttCompleted: session.live.sttCompleted,
+          } : null,
+        })),
+      });
       return;
     }
 
@@ -239,12 +370,11 @@ wss.on('connection', (ws, req) => {
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   ws.on('message', (raw) => {
-    try {
-      if (PROVIDER === 'twilio') handleTwilioMessage(ws, raw);
-      else handleSimulatorMessage(ws, raw);
-    } catch (error) {
-      if (PROVIDER !== 'twilio') send(ws, { type: 'gateway.error', error: error instanceof Error ? error.message : String(error) });
-      else console.error('[media-gateway] provider message error', error);
+    if (PROVIDER === 'twilio') {
+      void handleTwilioMessage(ws, raw).catch((error) => console.error('[media-gateway] provider message error', error instanceof Error ? error.message : String(error)));
+    } else {
+      try { handleSimulatorMessage(ws, raw); }
+      catch (error) { send(ws, { type: 'gateway.error', error: error instanceof Error ? error.message : String(error) }); }
     }
   });
   ws.on('close', () => {
@@ -261,13 +391,18 @@ const heartbeat = setInterval(() => {
 }, HEARTBEAT_MS);
 
 server.listen(PORT, () => {
-  console.log(`[media-gateway] v0.14.0 listening on :${PORT} provider=${PROVIDER}`);
+  console.log(`[media-gateway] v0.15.0 listening on :${PORT} provider=${PROVIDER} liveE2E=${LIVE_E2E_ENABLED}`);
 });
 
+let shuttingDown = false;
 function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   clearInterval(heartbeat);
   for (const ws of wss.clients) ws.close(1001, 'server_shutdown');
-  server.close(() => process.exit(0));
+  server.close(() => console.log('[media-gateway] HTTP server closed'));
+  const forceExit = setTimeout(() => process.exit(1), Math.max(10000, LIVE_BRIDGE_CONFIG.httpTimeoutMs + 6000));
+  forceExit.unref();
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
