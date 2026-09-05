@@ -61,12 +61,20 @@ assert.equal(wav.readUInt16LE(22), 1);
 assert.equal(wav.readUInt16LE(34), 16);
 assert.equal(wav.readUInt32LE(40), 320);
 
+const liveBridgeSource = readFileSync(new URL('./liveBridge.mjs', import.meta.url), 'utf8');
+assert.match(liveBridgeSource, /sttSessionId: randomUUID\(\)/);
+assert.match(liveBridgeSource, /nextChunkIndex/);
+assert.match(liveBridgeSource, /\/api\/stt-session-complete/);
+assert.match(liveBridgeSource, /const remainder = joined\.subarray\(TURN_BYTES\)/);
+assert.match(liveBridgeSource, /await waitUntilIdle\(live\)/);
+
 const serverSource = readFileSync(new URL('./server.mjs', import.meta.url), 'utf8');
 assert.match(serverSource, /GATEWAY_CONTROL_TOKEN/);
 assert.match(serverSource, /gateway_control_token_not_configured/);
 assert.match(serverSource, /pathname === '\/v1\/sessions'/);
 assert.match(serverSource, /if \(!requireControl\(req, res\)\) return;/);
+assert.match(serverSource, /liveBridge\.completeSession\(session\)/);
 assert.doesNotMatch(serverSource, /session\.lastPcm16k\s*=/);
 assert.match(serverSource, /PUBLIC_MEDIA_WSS_URL must use wss:\/\//);
 
-console.log('PASS v0.15 gateway verification: Twilio signature/media contract, audio conversion, WAV framing, protected controls');
+console.log('PASS v0.15 gateway verification: Twilio signature/media contract, audio conversion, WAV framing, protected controls, STT session lifecycle');
