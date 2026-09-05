@@ -8,6 +8,7 @@ const SAMPLE_RATE = 16000;
 const BYTES_PER_SAMPLE = 2;
 const TURN_BYTES = Math.round(SAMPLE_RATE * BYTES_PER_SAMPLE * TURN_MS / 1000);
 const AI_APP_BASE_URL = String(process.env.AI_APP_BASE_URL || '').trim().replace(/\/$/, '');
+const STT_INTERNAL_API_TOKEN = String(process.env.STT_INTERNAL_API_TOKEN || '').trim();
 
 export function wavFromPcm16k(pcm) {
   const header = Buffer.alloc(44);
@@ -39,12 +40,16 @@ function endpoint(path) {
 }
 
 async function postJson(url, body) {
+  if (!STT_INTERNAL_API_TOKEN) throw new Error('STT_INTERNAL_API_TOKEN is required for live gateway API calls');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
     const response = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-stt-internal-token': STT_INTERNAL_API_TOKEN,
+      },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -70,7 +75,7 @@ async function transcribeTurn(session, pcm) {
   const chunkStartMs = chunkIndex * TURN_MS;
   const chunkEndMs = chunkStartMs + TURN_MS;
   const wav = wavFromPcm16k(pcm);
-  const payload = await postJson(endpoint('/api/stt-ingest'), {
+  const payload = await postJson(endpoint('/api/gateway-stt-ingest'), {
     sessionId: live.sttSessionId,
     chunkIndex,
     chunkStartMs,
@@ -85,7 +90,7 @@ async function transcribeTurn(session, pcm) {
 }
 
 async function answerTurn(session, question) {
-  return postJson(endpoint('/api/stt-rag-answer'), {
+  return postJson(endpoint('/api/gateway-stt-rag-answer'), {
     question,
     history: session.history.slice(-6),
   });
@@ -150,7 +155,7 @@ export function createLiveBridge({ onAnswer, onFallback, onError }) {
       try {
         await waitUntilIdle(live);
         if (!live.sttStarted) return { completed: false };
-        await postJson(endpoint('/api/stt-session-complete'), { sessionId: live.sttSessionId });
+        await postJson(endpoint('/api/gateway-stt-session-complete'), { sessionId: live.sttSessionId });
         live.sttCompleted = true;
         return { completed: true };
       } finally {
@@ -215,7 +220,13 @@ export const LIVE_BRIDGE_CONFIG = {
   channels: 1,
   format: 'pcm_s16le',
   aiAppBaseUrlConfigured: Boolean(AI_APP_BASE_URL),
+  internalApiTokenConfigured: Boolean(STT_INTERNAL_API_TOKEN),
+  protectedApiPaths: [
+    '/api/gateway-stt-ingest',
+    '/api/gateway-stt-rag-answer',
+    '/api/gateway-stt-session-complete',
+  ],
   rawAudioPersistence: false,
-  transcriptPersistence: 'one stt_poc call session per live phone call; recognized turn text is persisted by stt-ingest',
-  sttSessionCompletion: 'best-effort on phone session close via stt-session-complete',
+  transcriptPersistence: 'one stt_poc call session per live phone call; recognized turn text is persisted by protected gateway STT ingest',
+  sttSessionCompletion: 'best-effort on phone session close via protected gateway session-complete',
 };
