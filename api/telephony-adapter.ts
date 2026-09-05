@@ -33,12 +33,15 @@ const MEDIA_GATEWAY = {
     aiAppBaseUrlEnv: 'AI_APP_BASE_URL',
     featureGate: 'LIVE_E2E_ENABLED=true',
     rawAudioPersistence: false,
-    transcriptPersistence: 'recognized text is persisted by the existing stt-ingest endpoint',
+    transcriptPersistence: 'one stt_poc session per live phone call; recognized turn text is stored as sequential transcript chunks',
+    sessionCompletion: 'best-effort stt-session-complete after in-flight turn settles on call/socket close',
   },
   serverTts: {
     implementation: 'openai-audio-speech',
     model: 'gpt-4o-mini-tts',
     responseFormat: 'pcm',
+    pcmInputContract: { codec: 'pcm_s16le', sampleRate: 24000, channels: 1 },
+    timeoutMs: 30000,
     telephoneOutput: { codec: 'mulaw', sampleRate: 8000, channels: 1 },
     requiredSecrets: ['OPENAI_API_KEY'],
     monthlyBaseFee: false,
@@ -52,11 +55,11 @@ const MEDIA_GATEWAY = {
     'AI_APP_BASE_URL',
     'GATEWAY_CONTROL_TOKEN',
   ],
-  optionalTuningEnv: ['LIVE_TURN_MS', 'LIVE_HTTP_TIMEOUT_MS', 'HEARTBEAT_MS', 'MAX_FRAME_BYTES'],
+  optionalTuningEnv: ['LIVE_TURN_MS', 'LIVE_HTTP_TIMEOUT_MS', 'OPENAI_TTS_TIMEOUT_MS', 'HEARTBEAT_MS', 'MAX_FRAME_BYTES'],
   publicEndpoints: ['/health', '/v1/twiml', 'WSS /v1/media (Twilio signature required)'],
   protectedControlPlane: ['GET /v1/sessions', 'POST /v1/tts', 'POST /v1/clear'],
   controlAuth: 'Bearer or x-gateway-control-token using GATEWAY_CONTROL_TOKEN',
-  scope: 'live bridge code ready; persistent WSS hosting and Twilio trial number connection still required for real-call E2E',
+  scope: 'live bridge code hardened; persistent WSS hosting and Twilio trial number connection still required for real-call E2E',
 };
 
 function normalizeInbound(raw: unknown) {
@@ -102,7 +105,7 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
       lifecycle: ['call.started', 'audio.inbound', 'dtmf.received', 'call.stopped'],
       commands: ['audio.outbound', 'audio.clear', 'call.handoff', 'call.hangup'],
       mediaGateway: MEDIA_GATEWAY,
-      note: 'Live STT→RAG→Server TTS bridge is implemented and gateway controls are protected. Real-call E2E still requires persistent WSS deployment and Twilio Trial connection.',
+      note: 'Live STT→RAG→Server TTS bridge is code-hardened and gateway controls are protected. Real-call E2E still requires persistent WSS deployment and Twilio Trial connection.',
     });
   }
   if (req.method === 'POST') {
