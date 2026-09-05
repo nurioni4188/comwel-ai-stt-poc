@@ -23,14 +23,17 @@ const MEDIA_GATEWAY = {
     outboundEvents: ['media', 'mark', 'clear'],
     requiredSecrets: ['TWILIO_AUTH_TOKEN', 'PUBLIC_MEDIA_WSS_URL'],
     signatureValidationRequired: true,
+    signatureUrlCompatibility: 'exact WSS URL plus trailing-slash variant',
   },
   liveBridge: {
     enabledByDefault: false,
     turnWindowMs: 8000,
-    flow: ['Twilio media', 'PCM16/16k buffer', 'CLOVA STT', 'approved-evidence RAG', 'OpenAI server TTS', 'Twilio media playback'],
+    upstreamTimeoutMs: 20000,
+    flow: ['Twilio media', 'PCM16/16k memory buffer', 'CLOVA STT', 'approved-evidence RAG', 'OpenAI server TTS', 'Twilio media playback'],
     aiAppBaseUrlEnv: 'AI_APP_BASE_URL',
     featureGate: 'LIVE_E2E_ENABLED=true',
     rawAudioPersistence: false,
+    transcriptPersistence: 'recognized text is persisted by the existing stt-ingest endpoint',
   },
   serverTts: {
     implementation: 'openai-audio-speech',
@@ -40,8 +43,19 @@ const MEDIA_GATEWAY = {
     requiredSecrets: ['OPENAI_API_KEY'],
     monthlyBaseFee: false,
   },
-  gatewayRequiredEnv: ['TELEPHONY_PROVIDER=twilio', 'LIVE_E2E_ENABLED=true', 'TWILIO_AUTH_TOKEN', 'PUBLIC_MEDIA_WSS_URL', 'OPENAI_API_KEY', 'AI_APP_BASE_URL'],
-  controlPlane: ['/health', '/v1/twiml', '/v1/sessions', 'POST /v1/tts', 'POST /v1/clear'],
+  gatewayRequiredEnv: [
+    'TELEPHONY_PROVIDER=twilio',
+    'LIVE_E2E_ENABLED=true',
+    'TWILIO_AUTH_TOKEN',
+    'PUBLIC_MEDIA_WSS_URL',
+    'OPENAI_API_KEY',
+    'AI_APP_BASE_URL',
+    'GATEWAY_CONTROL_TOKEN',
+  ],
+  optionalTuningEnv: ['LIVE_TURN_MS', 'LIVE_HTTP_TIMEOUT_MS', 'HEARTBEAT_MS', 'MAX_FRAME_BYTES'],
+  publicEndpoints: ['/health', '/v1/twiml', 'WSS /v1/media (Twilio signature required)'],
+  protectedControlPlane: ['GET /v1/sessions', 'POST /v1/tts', 'POST /v1/clear'],
+  controlAuth: 'Bearer or x-gateway-control-token using GATEWAY_CONTROL_TOKEN',
   scope: 'live bridge code ready; persistent WSS hosting and Twilio trial number connection still required for real-call E2E',
 };
 
@@ -88,7 +102,7 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
       lifecycle: ['call.started', 'audio.inbound', 'dtmf.received', 'call.stopped'],
       commands: ['audio.outbound', 'audio.clear', 'call.handoff', 'call.hangup'],
       mediaGateway: MEDIA_GATEWAY,
-      note: 'Live STT→RAG→Server TTS bridge is implemented. Real-call E2E requires persistent WSS deployment and Twilio Trial connection.',
+      note: 'Live STT→RAG→Server TTS bridge is implemented and gateway controls are protected. Real-call E2E still requires persistent WSS deployment and Twilio Trial connection.',
     });
   }
   if (req.method === 'POST') {
