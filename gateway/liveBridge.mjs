@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
-const TURN_MS = Number(process.env.LIVE_TURN_MS || 8000);
+const requestedTurnMs = Number(process.env.LIVE_TURN_MS || 8000);
+const TURN_MS = Number.isFinite(requestedTurnMs) ? Math.min(15000, Math.max(1000, Math.round(requestedTurnMs))) : 8000;
+const requestedTimeoutMs = Number(process.env.LIVE_HTTP_TIMEOUT_MS || 20000);
+const HTTP_TIMEOUT_MS = Number.isFinite(requestedTimeoutMs) ? Math.min(60000, Math.max(3000, Math.round(requestedTimeoutMs))) : 20000;
 const SAMPLE_RATE = 16000;
 const BYTES_PER_SAMPLE = 2;
 const TURN_BYTES = Math.round(SAMPLE_RATE * BYTES_PER_SAMPLE * TURN_MS / 1000);
-const AI_APP_BASE_URL = (process.env.AI_APP_BASE_URL || 'https://comwel-ai-stt-poc.vercel.app').replace(/\/$/, '');
+const AI_APP_BASE_URL = String(process.env.AI_APP_BASE_URL || '').trim().replace(/\/$/, '');
 
-function wavFromPcm16k(pcm) {
+export function wavFromPcm16k(pcm) {
   const header = Buffer.alloc(44);
   const dataSize = pcm.length;
   const byteRate = SAMPLE_RATE * BYTES_PER_SAMPLE;
@@ -26,24 +29,43 @@ function wavFromPcm16k(pcm) {
   return Buffer.concat([header, pcm]);
 }
 
+function endpoint(path) {
+  if (!AI_APP_BASE_URL) throw new Error('AI_APP_BASE_URL is required when LIVE_E2E_ENABLED=true');
+  const url = new URL(path, `${AI_APP_BASE_URL}/`);
+  if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
+    throw new Error('AI_APP_BASE_URL must use HTTPS outside localhost');
+  }
+  return url.toString();
+}
+
 async function postJson(url, body) {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const text = await response.text();
-  let payload;
-  try { payload = text ? JSON.parse(text) : {}; }
-  catch { throw new Error(`invalid JSON from ${url}: ${text.slice(0, 300)}`); }
-  if (!response.ok) throw new Error(`${url} ${response.status}: ${payload.detail || payload.error || text.slice(0, 300)}`);
-  return payload;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let payload;
+    try { payload = text ? JSON.parse(text) : {}; }
+    catch { throw new Error(`invalid JSON from ${url}: ${text.slice(0, 300)}`); }
+    if (!response.ok) throw new Error(`${url} ${response.status}: ${payload.detail || payload.error || text.slice(0, 300)}`);
+    return payload;
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error(`upstream timeout after ${HTTP_TIMEOUT_MS}ms: ${url}`);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function transcribeTurn(session, pcm) {
   const sessionId = randomUUID();
   const wav = wavFromPcm16k(pcm);
-  const payload = await postJson(`${AI_APP_BASE_URL}/api/stt-ingest`, {
+  const payload = await postJson(endpoint('/api/stt-ingest'), {
     sessionId,
     chunkIndex: 0,
     chunkStartMs: 0,
@@ -57,7 +79,7 @@ async function transcribeTurn(session, pcm) {
 }
 
 async function answerTurn(session, question) {
-  return postJson(`${AI_APP_BASE_URL}/api/stt-rag-answer`, {
+  return postJson(endpoint('/api/stt-rag-answer'), {
     question,
     history: session.history.slice(-6),
   });
@@ -152,9 +174,11 @@ export function createLiveBridge({ onAnswer, onFallback, onError }) {
 
 export const LIVE_BRIDGE_CONFIG = {
   turnMs: TURN_MS,
+  httpTimeoutMs: HTTP_TIMEOUT_MS,
   sampleRate: SAMPLE_RATE,
   channels: 1,
   format: 'pcm_s16le',
-  aiAppBaseUrl: AI_APP_BASE_URL,
+  aiAppBaseUrlConfigured: Boolean(AI_APP_BASE_URL),
   rawAudioPersistence: false,
+  transcriptPersistence: 'stt-ingest stores recognized text in stt_poc transcript tables',
 };
